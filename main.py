@@ -65,9 +65,16 @@ def http_get(url, timeout=25):
     return raw.decode("utf-8", "ignore")
 
 
+UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/122.0 Safari/537.36")
+
+
 def http_post_json(url, payload, headers, timeout=180):
     data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=data, method="POST", headers=headers)
+    # 必须带浏览器 UA：Resend 等 API 前置 Cloudflare，会拦掉程序默认 UA（返回 403 / 1010）
+    hdrs = {"User-Agent": UA, "Accept": "application/json"}
+    hdrs.update(headers or {})
+    req = urllib.request.Request(url, data=data, method="POST", headers=hdrs)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8"))
 

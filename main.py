@@ -450,13 +450,18 @@ def _smtp_send(host, port, mode, user, pwd, msg, ctx):
 
 
 def _send_via_resend(user, from_name, to, subject, body_text, docx_bytes, filename):
-    """可选：配置 RESEND_API_KEY 后改用 Resend HTTP API 发信（云端 IP 不易被邮箱风控）。"""
+    """可选：配置 RESEND_API_KEY 后改用 Resend HTTP API 发信（海外服务器不被邮箱风控）。
+
+    未验证域名时，Resend 只允许：from 用 onboarding@resend.dev，且只能发到「注册 Resend 的那个邮箱」。
+    可用 RESEND_FROM 覆盖发件地址（已验证域名时填写）。
+    """
     key = os.environ.get("RESEND_API_KEY")
     if not key:
         return False
     import base64
+    from_addr = os.environ.get("RESEND_FROM") or "onboarding@resend.dev"
     payload = {
-        "from": "%s <%s>" % (from_name, user),
+        "from": "%s <%s>" % (from_name, from_addr),
         "to": [to],
         "subject": subject,
         "text": body_text,

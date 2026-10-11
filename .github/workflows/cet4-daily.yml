@@ -1,0 +1,53 @@
+name: CET-4 每日精读
+
+on:
+  schedule:
+    - cron: '0 23 * * *'   # 北京时间每天 07:00（UTC 23:00）
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cet4-daily
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TZ: Asia/Shanghai
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: 生成精读文档并发送邮件
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: python main.py
+      - name: 备份 Word 文件
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cet4-docx
+          path: output/*.docx
+          if-no-files-found: ignore
+          retention-days: 30
+      - name: 保活提交
+        if: always()
+        run: |
+          git config user.name "cet4-bot"
+          git config user.email "actions@users.noreply.github.com"
+          mkdir -p .state
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > .state/last-run.txt
+          git add .state/last-run.txt
+          git commit -m "chore: keep-alive $(date -u +%F)" || echo "nothing to commit"
+          git push || echo "push skipped"

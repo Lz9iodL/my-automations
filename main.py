@@ -274,7 +274,7 @@ def sentence_no(text, pos):
 
 def mark_word(text, word, n):
     """把第一个独立出现的 word 标成 **word**①。"""
-    if not word:
+    if not word or n < 1 or n > len(CIRCLED):
         return text
     m = re.search(r"(?<![A-Za-z])" + re.escape(word) + r"(?![A-Za-z])", text)
     if not m:
@@ -304,10 +304,12 @@ def build_section2(paras, words, grammar):
             p = p[:pos] + "【%d】" % n + p[pos:]
             p = p[:s] + "**<u>" + p[s:e] + "</u>**" + p[e:]
         marked.append(p)
-    for n, w in enumerate(words, 1):
-        wd = w.get("w") or w.get("base") or ""
+    for n, w in enumerate(words[:len(CIRCLED)], 1):
+        wd = (w.get("w") or w.get("base") or "").strip()
+        if not wd:
+            continue
         for i in range(len(marked)):
-            m = re.search(r"(?<![A-Za-z])" + re.escape(wd) + r"(?![A-Za-z])", marked[i]) if wd else None
+            m = re.search(r"(?<![A-Za-z])" + re.escape(wd) + r"(?![A-Za-z])", marked[i])
             if m:
                 marked[i] = mark_word(marked[i], wd, n)
                 break
@@ -338,15 +340,24 @@ def build_markdown(article, today, words, gj):
             "> - **加粗并加下划线**短语后的 **【1】—【6】**：第四部分「重点语法与长难句」（方头括号）。",
             "", sec2, ""]
 
-    # 第三部分
+    # 第三部分（每个生词独占一块，字段分行，便于阅读）
     sec3 = ["## 三、CET-4 高频核心生词（精选 30 词）", "",
             "> 序号为带圈数字 ①—㉚，与原文词末序号一一对应。", ""]
-    for n, w in enumerate(words[:30], 1):
-        sec3.append("**%s%s** `%s` （原形 **%s**）— *%s* %s — 例句：%s — 搭配：%s — **词形变化**：%s"
-                    % (CIRCLED[n - 1], w.get("w") or w.get("base") or "", w.get("phon") or "",
-                       w.get("base") or w.get("w") or "", w.get("pos") or "", w.get("cn") or "",
-                       w.get("eg") or "", w.get("col") or "", w.get("der") or ""))
-    sec3.append("")
+    for n, w in enumerate(words[:len(CIRCLED)], 1):
+        wd = (w.get("w") or w.get("base") or "").strip()
+        if not wd:
+            continue
+        base = (w.get("base") or wd).strip()
+        phon = (w.get("phon") or "").strip()
+        sec3.append("**%s %s**%s" % (CIRCLED[n - 1], wd, ("  `" + phon + "`") if phon else ""))
+        if base and base.lower() != wd.lower():
+            sec3.append("- **原形**：%s" % base)
+        sec3.append("- **词性**：%s" % (w.get("pos") or ""))
+        sec3.append("- **释义**：%s" % (w.get("cn") or ""))
+        sec3.append("- **例句**：%s" % (w.get("eg") or ""))
+        sec3.append("- **语法与搭配**：%s" % (w.get("col") or ""))
+        sec3.append("- **词形变化**：%s" % (w.get("der") or ""))
+        sec3.append("")
 
     # 第四部分
     sec4 = ["## 四、重点语法与长难句（逐句标注）", ""]
@@ -387,6 +398,7 @@ def gen_markdown(article):
     try:
         wj = llm_json(WORD_PROMPT, base_user, temperature=0.3)
         words = [w for w in (wj.get("words") or []) if isinstance(w, dict) and (w.get("w") or w.get("base"))]
+        words = words[:len(CIRCLED)]          # 严格截断到 30 个，防越界
     except Exception:
         words = []
     best = None
@@ -764,7 +776,9 @@ def main_handler(event=None, context=None):
         return {"ok": True, "article": full["title"], "url": full["url"],
                 "file": fname, "warnings": warns}
     except Exception as e:
-        return {"ok": False, "error": repr(e)}
+        import traceback
+        return {"ok": False, "error": repr(e),
+                "trace": traceback.format_exc()[-1800:]}
 
 
 if __name__ == "__main__":

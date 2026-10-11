@@ -164,86 +164,266 @@ def extract_article(url):
 
 
 # ---------------------------------------------------------------- 大模型
-SYSTEM_PROMPT = """你是 CET-4 英语助教。请把给定的 China Daily 英文文章加工成一份精读学习材料，\
-严格输出 Markdown，只包含以下五部分，不要任何额外说明文字：
+WORD_PROMPT = """你是 CET-4 英语助教。请从给定的英文原文中，精选 30 个 CET-4 高频核心生词（可含少量高频难词）。
+只输出一个 JSON 对象，不要任何解释、不要 Markdown 代码块。格式：
+{"words":[{"w":"原文形式","base":"原形","phon":"/音标/","pos":"n./v./adj./adv.","cn":"中文释义","eg":"取自原文的例句，目标词用 **加粗**","col":"常用固定搭配","der":"词形变化与派生词"}]}
 
-# CET-4 每日精读 · China Daily
+硬性要求：
+1. 必须正好 30 个，且互不相同；
+2. `w` 必须与原文中的拼写**完全一致**（含时态、复数形式，如 scattered、embracing、depicts）；
+3. 每个词都必须**真实出现在原文中**，不得臆造；
+4. `der` 写复数、时态形式与同根派生词（如 fragile -> fragility / fragilely）。
+"""
 
-> 整理日期：<今天日期>　|　适用水平：CET-4（难度适中偏高）　|　生词：精选 30 个高频词
+GRAMMAR_PROMPT = """你是英语语法讲师。请从给定英文原文中挑出 6 处最适合 CET-4 学生学习的重点语法现象或长难句。
+只输出一个 JSON 对象，不要任何解释、不要 Markdown 代码块。格式：
+{"topic_cn":"一句话中文概括全文主题","grammar":[{"phrase":"原文中逐字出现的片段","point":"语法点名称","note":"简明中文讲解"}],"tips":["学习建议1","学习建议2","学习建议3"]}
 
-## 一、文章信息
+硬性要求：
+1. 必须正好 6 条，对应 6 个**不同**的句子，覆盖不同语法点（分词、定语从句、名词性从句、并列结构、时态等）；
+2. `phrase` 必须是原文中**连续、逐字、一字不差**出现的片段（程序会用它在原文里定位，并自动加粗加下划线），
+   长度 40—120 个字符，不要改写、不要用省略号、不要加引号；
+3. `note` 用中文，1—2 句说清语法点与句子主干；
+4. `tips` 给 3—4 条中文学习建议。
+"""
 
-| 项目 | 内容 |
-| --- | --- |
-| 标题 | <英文标题> |
-| 来源 | China Daily（中国日报英文网） |
-| 作者 | <作者> |
-| 发布时间 | <发布时间> |
-| 网页链接 | <URL> |
-| 体裁 | 新闻报道 / 特写 |
-| 主题 | <一句话中文概括> |
-
-## 二、原文（含生词 + 语法双重标注）
-
-> **标注说明**
-> - **加粗**单词后的 **①—㉚**：第三部分「CET-4 高频核心生词」（带圈数字）。
-> - **加粗并加下划线**短语后的 **【1】—【6】**：第四部分「重点语法与长难句」（方头括号）。
-
-**[1]** <段落原文，生词写成 **word**① 形式，语法短语写成 **<u>phrase</u>**【1】形式>
-（逐段编号 [1][2]…，全文照录不改写）
-
-## 三、CET-4 高频核心生词（精选 30 词）
-
-> 序号为带圈数字 ①—㉚，与原文词末序号一一对应。
-
-### ① <word> `/<音标>/`
-- **词性**：<n./v./adj./adv.>
-- **释义**：<中文释义>
-- **例句**：<原文例句，目标词加粗>
-- **语法与搭配**：<常用固定搭配与语法点>
-- **词形变化**：<复数/时态/派生词>
-
-（依次写满 30 个词）
-
-## 四、重点语法与长难句（逐句标注）
-
-**【1】出处：第 X 段第 Y 句**
-- **原句**：<原句>
-- **语法点**：<语法名称>
-- **讲解**：<简明讲解>
-
-（写满 6 条）
-
-## 五、学习建议
-
-1. …
-2. …
-
-要求：原文必须逐段照录、不得改写；生词序号 ①—㉚ 与原文标注一一对应；语法序号【1】—【6】与原文句末标注一一对应。"""
+CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳㉑㉒㉓㉔㉕㉖㉗㉘㉙㉚"
 
 
-def gen_markdown(article):
+def llm_chat(system, user, temperature=0.3, max_tokens=8000, json_mode=False):
     base = (os.environ.get("LLM_BASE_URL") or "https://api.deepseek.com/v1").rstrip("/")
     key = os.environ.get("LLM_API_KEY") or ""
     model = os.environ.get("LLM_MODEL") or "deepseek-chat"
-    today = datetime.datetime.now().strftime("%Y-%m-%d")
-    user = ("【今天日期】{d}\n【文章标题】{t}\n【作者】{a}\n【发布时间】{p}\n【网页链接】{u}\n\n"
-            "【原文】\n{b}").format(d=today, t=article["title"], a=article["author"],
-                                   p=article["date"], u=article["url"], b=article["body"])
     payload = {
         "model": model,
-        "messages": [{"role": "system", "content": SYSTEM_PROMPT},
+        "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": user}],
-        "temperature": 0.3,
-        "max_tokens": 8000,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
     }
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
     headers = {"Content-Type": "application/json", "Authorization": "Bearer " + key}
     resp = http_post_json(base + "/chat/completions", payload, headers)
     return resp["choices"][0]["message"]["content"]
 
 
-CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳㉑㉒㉓㉔㉕㉖㉗㉘㉙㉚"
+def _strip_fence(s):
+    s = (s or "").strip()
+    s = re.sub(r"^```[a-zA-Z]*\s*", "", s)
+    s = re.sub(r"\s*```$", "", s)
+    return s.strip()
+
+
+def llm_json(system, user, temperature=0.3, max_tokens=8000):
+    txt = _strip_fence(llm_chat(system, user, temperature, max_tokens, json_mode=True))
+    try:
+        return json.loads(txt)
+    except Exception:
+        m = re.search(r"\{.*\}", txt, re.S)
+        if m:
+            return json.loads(m.group(0))
+        raise
+
+
+# ---------------------------------------------------------------- 标注（由代码精确写入，不依赖模型排版）
+_SENT_END = re.compile(r"[.!?](?=[\"')\]]?(?:\s|$))")
+_ABBR = re.compile(r"(?:Mr|Mrs|Ms|Dr|St|No|U\.S|U\.K|Co|Inc|Ltd|vs|etc)\.$", re.I)
+
+
+def locate_phrase(paras, phrase):
+    """在段落里定位模型给出的短语（容忍空白/大小写差异），返回 (段号, 起, 止)。"""
+    toks = (phrase or "").split()
+    if len(toks) < 3:
+        return None
+    for cut in (len(toks), int(len(toks) * 0.7), int(len(toks) * 0.5)):
+        if cut < 3:
+            continue
+        rx = re.compile(r"\s+".join(re.escape(w) for w in toks[:cut]), re.I)
+        for i, p in enumerate(paras):
+            m = rx.search(p)
+            if m:
+                return i, m.start(), m.end()
+    return None
+
+
+def sentence_end(text, start):
+    """从 start 向后找句子结尾，返回「句末注释序号」的插入位置。"""
+    for m in _SENT_END.finditer(text, start):
+        if _ABBR.search(text[max(0, m.start() - 6):m.start() + 1]):
+            continue
+        pos = m.end()
+        while pos < len(text) and text[pos] in "\"')]":
+            pos += 1
+        return pos
+    return len(text)
+
+
+def sentence_span(text, pos):
+    """返回 pos 所在句子的 (起, 止)。"""
+    st = 0
+    for m in _SENT_END.finditer(text, 0, pos):
+        st = m.end()
+    return st, sentence_end(text, pos)
+
+
+def sentence_no(text, pos):
+    """pos 所在句子在本段中的序号（1 起）。"""
+    return sum(1 for _ in _SENT_END.finditer(text, 0, pos)) + 1
+
+
+def mark_word(text, word, n):
+    """把第一个独立出现的 word 标成 **word**①。"""
+    if not word:
+        return text
+    m = re.search(r"(?<![A-Za-z])" + re.escape(word) + r"(?![A-Za-z])", text)
+    if not m:
+        return text
+    return text[:m.start()] + "**" + m.group(0) + "**" + CIRCLED[n - 1] + text[m.end():]
+
+
+def build_section2(paras, words, grammar):
+    """生成第二部分：语法短语 **<u>…</u>** + 句末【n】；生词 **word**①。"""
+    spots = {}
+    infos = []
+    for n, g in enumerate(grammar, 1):
+        loc = locate_phrase(paras, g.get("phrase", ""))
+        if not loc:
+            infos.append({"n": n, "g": g, "found": False})
+            continue
+        i, s, e = loc
+        spots.setdefault(i, []).append((s, e, n))
+        st, en = sentence_span(paras[i], s)
+        infos.append({"n": n, "g": g, "found": True, "para": i + 1,
+                      "sent": sentence_no(paras[i], s),
+                      "sentence": paras[i][st:en].strip()})
+    marked = []
+    for i, p in enumerate(paras):
+        for (s, e, n) in sorted(spots.get(i, []), key=lambda x: -x[0]):
+            pos = max(sentence_end(p, e), e)
+            p = p[:pos] + "【%d】" % n + p[pos:]
+            p = p[:s] + "**<u>" + p[s:e] + "</u>**" + p[e:]
+        marked.append(p)
+    for n, w in enumerate(words, 1):
+        wd = w.get("w") or w.get("base") or ""
+        for i in range(len(marked)):
+            m = re.search(r"(?<![A-Za-z])" + re.escape(wd) + r"(?![A-Za-z])", marked[i]) if wd else None
+            if m:
+                marked[i] = mark_word(marked[i], wd, n)
+                break
+    return marked, infos
+
+
+def build_markdown(article, today, words, gj):
+    paras = [p.strip() for p in article["body"].split("\n\n") if p.strip()]
+    grammar = [g for g in (gj.get("grammar") or []) if isinstance(g, dict) and g.get("phrase")][:6]
+    marked, infos = build_section2(paras, words, grammar)
+    sec2 = "\n\n".join("**[%d]** %s" % (i + 1, p) for i, p in enumerate(marked))
+
+    # 第一部分
+    head = ["# CET-4 每日精读 · China Daily", "",
+            "> 整理日期：%s　|　适用水平：CET-4（难度适中偏高）　|　生词：精选 30 个高频词" % today,
+            "", "## 一、文章信息", "",
+            "| 项目 | 内容 |", "| --- | --- |",
+            "| 标题 | %s |" % article["title"],
+            "| 来源 | China Daily（中国日报英文网） |",
+            "| 作者 | %s |" % (article["author"] or "China Daily"),
+            "| 发布时间 | %s |" % article["date"],
+            "| 网页链接 | %s |" % article["url"],
+            "| 体裁 | 新闻报道 / 特写 |",
+            "| 主题 | %s |" % (gj.get("topic_cn") or ""),
+            "", "## 二、原文（含生词 + 语法双重标注）", "",
+            "> **标注说明**",
+            "> - **加粗**单词后的 **①—㉚**：第三部分「CET-4 高频核心生词」（带圈数字）。",
+            "> - **加粗并加下划线**短语后的 **【1】—【6】**：第四部分「重点语法与长难句」（方头括号）。",
+            "", sec2, ""]
+
+    # 第三部分
+    sec3 = ["## 三、CET-4 高频核心生词（精选 30 词）", "",
+            "> 序号为带圈数字 ①—㉚，与原文词末序号一一对应。", ""]
+    for n, w in enumerate(words[:30], 1):
+        sec3.append("**%s%s** `%s` （原形 **%s**）— *%s* %s — 例句：%s — 搭配：%s — **词形变化**：%s"
+                    % (CIRCLED[n - 1], w.get("w") or w.get("base") or "", w.get("phon") or "",
+                       w.get("base") or w.get("w") or "", w.get("pos") or "", w.get("cn") or "",
+                       w.get("eg") or "", w.get("col") or "", w.get("der") or ""))
+    sec3.append("")
+
+    # 第四部分
+    sec4 = ["## 四、重点语法与长难句（逐句标注）", ""]
+    for it in infos:
+        g = it["g"]
+        if it["found"]:
+            sec4.append("**【%d】出处：第 %d 段第 %d 句**" % (it["n"], it["para"], it["sent"]))
+            sec4.append("- **原句**：%s" % it["sentence"])
+        else:
+            sec4.append("**【%d】出处：见原文**" % it["n"])
+            sec4.append("- **原句**：%s" % (g.get("phrase") or ""))
+        sec4.append("- **语法点**：%s" % (g.get("point") or ""))
+        sec4.append("- **讲解**：%s" % (g.get("note") or ""))
+        sec4.append("")
+
+    # 第五部分
+    sec5 = ["## 五、学习建议", ""]
+    for i, t in enumerate((gj.get("tips") or [])[:5], 1):
+        sec5.append("%d. %s" % (i, t))
+    sec5.append("")
+
+    md = "\n".join(head + sec3 + sec4 + sec5)
+    miss_w = [n for n in range(1, len(words[:30]) + 1) if CIRCLED[n - 1] not in sec2]
+    miss_g = [n for n in range(1, 7) if ("【%d】" % n) not in sec2]
+    return md, miss_w, miss_g
+
+
+def gen_markdown(article):
+    """先让模型给出「生词表 + 语法清单」（JSON），再由代码把标注精确写进原文。"""
+    today = datetime.datetime.now().strftime("%Y-%m-%d")
+    paras = [p.strip() for p in article["body"].split("\n\n") if p.strip()]
+    numbered = "\n\n".join("【第%d段】%s" % (i + 1, p) for i, p in enumerate(paras))
+    base_user = ("【今天日期】{d}\n【文章标题】{t}\n【作者】{a}\n【发布时间】{p}\n【网页链接】{u}\n\n"
+                 "【原文（分段编号）】\n{b}").format(
+        d=today, t=article["title"], a=article["author"], p=article["date"],
+        u=article["url"], b=numbered)
+    words = []
+    try:
+        wj = llm_json(WORD_PROMPT, base_user, temperature=0.3)
+        words = [w for w in (wj.get("words") or []) if isinstance(w, dict) and (w.get("w") or w.get("base"))]
+    except Exception:
+        words = []
+    best = None
+    for attempt in (1, 2):
+        try:
+            gj = llm_json(GRAMMAR_PROMPT, base_user, temperature=0.3)
+        except Exception:
+            gj = {}
+        gj.setdefault("tips", [])
+        md, miss_w, miss_g = build_markdown(article, today, words, gj)
+        score = len(miss_g) + len(miss_w)
+        if best is None or score < best[0]:
+            best = (score, md, miss_w, miss_g)
+        if score == 0:
+            break
+    return best[1]
+
+
+
 _FW = str.maketrans("０１２３４５６７８９", "0123456789")
+
+
+def split_sections(md):
+    """把 Markdown 按五个部分切分，返回 {'一':..., '二':...} 形式的字典。"""
+    idx = {}
+    for key, tag in (("一", "## 一、"), ("二", "## 二、"), ("三", "## 三、"),
+                     ("四", "## 四、"), ("五", "## 五、")):
+        idx[key] = md.find(tag)
+    sec = {}
+    for key in ("一", "二", "三", "四", "五"):
+        start = idx[key]
+        if start < 0:
+            sec[key] = ""
+            continue
+        later = [v for v in idx.values() if v > start]
+        sec[key] = md[start:(min(later) if later else len(md))]
+    return sec
 
 
 def validate_md(md):
@@ -262,7 +442,25 @@ def validate_md(md):
     n_word = sum(1 for c in CIRCLED if c in md)
     if 0 < n_word < 30:
         problems.append("生词数不足 30（当前 %d）" % n_word)
+
+    # ---- 重点：原文（第二部分）里必须"就地"标注，不能只在后面几部分讲 ----
+    sec2 = split_sections(md).get("二", "").translate(_FW)
+    # 去掉「> 标注说明」等引用/说明行，避免其中的字样干扰判断
+    sec2 = "\n".join(l for l in sec2.split("\n") if not l.strip().startswith(">"))
+    if sec2:
+        miss_g2 = [str(i) for i in range(1, 7) if ("【%s】" % i) not in sec2]
+        if miss_g2:
+            problems.append("原文缺语法标注【%s】" % "】【".join(miss_g2))
+        n_u = sec2.count("<u>") + sec2.count("<ins>")
+        if n_u < 6:
+            problems.append("原文加下划线短语仅 %d 处（应≥6）" % n_u)
+        n_w2 = sum(1 for c in CIRCLED if c in sec2)
+        if n_w2 < 30:
+            problems.append("原文里生词标注仅 %d 个（应=30）" % n_w2)
+    else:
+        problems.append("未找到第二部分正文")
     return problems
+
 
 
 # ---------------------------------------------------------------- Markdown -> docx（纯标准库）
@@ -301,11 +499,12 @@ def _para(text, bold=False, sz=None, indent=0, quote=False, hr=False):
         if m.start() > pos:
             runs.append(_run(text[pos:m.start()], bold=bold, sz=sz))
         if m.group(1) is not None:
-            runs.append(_run(m.group(1), bold=True, underline=True, sz=sz))
+            # 语法标注：加粗 + 下划线；内部若嵌了 **word**① 去掉多余星号，保留带圈序号
+            runs.append(_run(m.group(1).replace("**", ""), bold=True, underline=True, sz=sz))
         elif m.group(2) is not None:
             runs.append(_run(m.group(2), bold=True, sz=sz))
         elif m.group(3) is not None:
-            runs.append(_run(m.group(3), underline=True, sz=sz))
+            runs.append(_run(m.group(3).replace("**", ""), underline=True, sz=sz))
         elif m.group(4) is not None:
             runs.append(_run(m.group(4), code=True, sz=sz))
         elif m.group(5) is not None:
@@ -539,7 +738,7 @@ def main_handler(event=None, context=None):
             return {"ok": False, "msg": "no usable article (bodies too short)"}
         md = gen_markdown(full)
         warns = validate_md(md)
-        if warns:  # 自检不通过 -> 重生成一次，取更完整的一版
+        if warns:  # 自检不通过 -> 整篇重生成一次，取更完整的一版
             try:
                 md2 = gen_markdown(full)
                 w2 = validate_md(md2)

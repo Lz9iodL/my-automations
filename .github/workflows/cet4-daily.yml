@@ -2,8 +2,9 @@ name: CET-4 每日精读
 
 on:
   schedule:
-    - cron: '0 23 * * *'   # 北京时间每天 07:00（UTC 23:00）
-  workflow_dispatch:
+    # 北京时间每天 07:00 = UTC 23:00（GitHub 用 UTC 计时）
+    - cron: '0 23 * * *'
+  workflow_dispatch:   # 支持在网页上手动触发，用于测试
 
 permissions:
   contents: write
@@ -17,15 +18,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      TZ: Asia/Shanghai
+      TZ: Asia/Shanghai   # 让脚本按北京时间取日期
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
       - name: 生成精读文档并发送邮件
         env:
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RESEND_FROM: ${{ secrets.RESEND_FROM }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
@@ -33,7 +38,8 @@ jobs:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
         run: python main.py
-      - name: 备份 Word 文件
+
+      - name: 备份 Word 文件（Artifact，可下载）
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -41,7 +47,8 @@ jobs:
           path: output/*.docx
           if-no-files-found: ignore
           retention-days: 30
-      - name: 保活提交
+
+      - name: 保活提交（避免 60 天无活动被自动停用）
         if: always()
         run: |
           git config user.name "cet4-bot"

@@ -416,16 +416,7 @@ def build_docx(md):
 
 
 # ---------------------------------------------------------------- 发邮件
-def send_mail(docx_bytes, filename, subject, body_text):
-    host = os.environ.get("SMTP_HOST") or "smtp.qq.com"
-    port = int(os.environ.get("SMTP_PORT") or "465")
-    user = os.environ.get("SMTP_USER") or ""
-    pwd = os.environ.get("SMTP_PASS") or ""
-    if not user or not pwd:
-        raise RuntimeError("SMTP_USER / SMTP_PASS not configured")
-    to = os.environ.get("MAIL_TO") or "2026200703@ruc.edu.cn"
-    from_name = os.environ.get("MAIL_FROM_NAME") or "CET-4 助教"
-
+def _build_msg(user, from_name, to, subject, body_text, docx_bytes, filename):
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = "%s <%s>" % (from_name, user)
@@ -435,10 +426,85 @@ def send_mail(docx_bytes, filename, subject, body_text):
                        maintype="application",
                        subtype="vnd.openxmlformats-officedocument.wordprocessingml.document",
                        filename=filename)
-    ctx = ssl.create_default_context()
-    with smtplib.SMTP_SSL(host, port, context=ctx, timeout=60) as s:
+    return msg
+
+
+def _smtp_send(host, port, mode, user, pwd, msg, ctx):
+    if mode == "ssl":
+        with smtplib.SMTP_SSL(host, port, context=ctx, timeout=60) as s:
+            s.login(user, pwd)
+            s.send_message(msg)
+        return
+    s = smtplib.SMTP(host, port, timeout=60)
+    try:
+        s.ehlo()
+        s.starttls(context=ctx)
+        s.ehlo()
         s.login(user, pwd)
         s.send_message(msg)
+    finally:
+        try:
+            s.quit()
+        except Exception:
+            pass
+
+
+def _send_via_resend(user, from_name, to, subject, body_text, docx_bytes, filename):
+    """可选：配置 RESEND_API_KEY 后改用 Resend HTTP API 发信（云端 IP 不易被邮箱风控）。"""
+    key = os.environ.get("RESEND_API_KEY")
+    if not key:
+        return False
+    import base64
+    payload = {
+        "from": "%s <%s>" % (from_name, user),
+        "to": [to],
+        "subject": subject,
+        "text": body_text,
+        "attachments": [{"filename": filename,
+                         "content": base64.b64encode(docx_bytes).decode()}],
+    }
+    http_post_json("https://api.resend.com/emails", payload,
+                   {"Content-Type": "application/json", "Authorization": "Bearer " + key})
+    return True
+
+
+def send_mail(docx_bytes, filename, subject, body_text):
+    host = os.environ.get("SMTP_HOST") or "smtp.qq.com"
+    user = os.environ.get("SMTP_USER") or ""
+    pwd = os.environ.get("SMTP_PASS") or ""
+    to = os.environ.get("MAIL_TO") or "2026200703@ruc.edu.cn"
+    from_name = os.environ.get("MAIL_FROM_NAME") or "CET-4 助教"
+
+    # 若配置了 Resend，优先用它（不受海外云 IP 风控影响）
+    try:
+        if _send_via_resend(user, from_name, to, subject, body_text, docx_bytes, filename):
+            return
+    except Exception as e:
+        print("resend failed:", repr(e))
+
+    if not user or not pwd:
+        raise RuntimeError("SMTP_USER / SMTP_PASS not configured")
+
+    msg = _build_msg(user, from_name, to, subject, body_text, docx_bytes, filename)
+    ctx = ssl.create_default_context()
+    port_env = os.environ.get("SMTP_PORT") or ""
+    if port_env:
+        p = int(port_env)
+        plan = [(host, p, "ssl" if p == 465 else "starttls")]
+    else:
+        # 依次尝试：465(SSL) → 587(STARTTLS) → 465(SSL)，每个再重试一次
+        plan = [(host, 465, "ssl"), (host, 587, "starttls"), (host, 465, "ssl")]
+
+    errs = []
+    for h, p, mode in plan:
+        for attempt in (1, 2):
+            try:
+                _smtp_send(h, p, mode, user, pwd, msg, ctx)
+                return
+            except Exception as e:
+                errs.append("%s:%d/%s try%d -> %r" % (h, p, mode, attempt, e))
+                time.sleep(2)
+    raise RuntimeError("mail send failed: " + " | ".join(errs))
 
 
 # ---------------------------------------------------------------- 入口

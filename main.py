@@ -33,19 +33,43 @@ from html import escape, unescape
 from email.message import EmailMessage
 
 CHINA_DAILY_HOME = "https://www.chinadaily.com.cn/"
-PREFER_KEYWORDS = ["culture", "cultural", "heritage", "museum", "tradition", "traditional",
-                   "festival", "art", "artisan", "craft", "opera", "cuisine", "food", "tea",
-                   "ancient", "dynasty", "calligraphy", "intangible", "tourism", "travel",
-                   "tech", "technology", "AI", "artificial", "space", "rocket", "satellite",
-                   "innovation", "science", "scientist", "robot", "digital", "smart",
-                   "green", "energy", "medicine", "health", "education"]
+# 选题偏好（加权）：教育 / 科技 / 社会 / 文化 / 环境 优先，其中教育与社会权重更高
+PREFER_KEYWORDS = {
+    # —— 教育（权重 4）
+    "education": 4, "school": 4, "student": 4, "university": 4, "college": 4,
+    "teacher": 4, "campus": 4, "curriculum": 4, "classroom": 4, "exam": 4,
+    "literacy": 4, "kindergarten": 4, "scholarship": 4, "lecture": 4, "tuition": 4,
+    # —— 社会（权重 4）
+    "society": 4, "social": 4, "community": 4, "volunteer": 4, "charity": 4,
+    "welfare": 4, "elderly": 4, "youth": 4, "family": 4, "rural": 4,
+    "city": 4, "urban": 4, "public": 4, "civic": 4, "poverty": 4,
+    # —— 文化（权重 3）
+    "culture": 3, "cultural": 3, "heritage": 3, "museum": 3, "tradition": 3,
+    "traditional": 3, "festival": 3, "art": 3, "artisan": 3, "craft": 3,
+    "opera": 3, "cuisine": 3, "ancient": 3, "dynasty": 3, "calligraphy": 3,
+    "intangible": 3, "tourism": 3, "travel": 3, "archaeolog": 3, "folklore": 3,
+    # —— 科技（权重 3）
+    "tech": 3, "technology": 3, "ai": 3, "artificial": 3, "space": 3,
+    "rocket": 3, "satellite": 3, "innovation": 3, "science": 3, "scientist": 3,
+    "robot": 3, "digital": 3, "smart": 3, "computer": 3, "internet": 3,
+    "data": 3, "algorithm": 3, "chip": 3, "startup": 3, "invention": 3,
+    # —— 环境（权重 3）
+    "environment": 3, "climate": 3, "green": 3, "energy": 3, "solar": 3,
+    "wind power": 3, "wildlife": 3, "ecolog": 3, "pollution": 3, "conservation": 3,
+    "sustainability": 3, "biodiversity": 3, "carbon": 3, "recycl": 3, "forest": 3,
+    # —— 其他常见软新闻（权重 2）
+    "medicine": 2, "health": 2, "sport": 2, "food": 2, "tea": 2,
+    "panda": 2, "bird": 2, "agriculture": 2, "farming": 2, "village": 2,
+}
 # 命中即排除：政治/涉台/军事/灾祸/犯罪等不适合做学习材料的题材
 EXCLUDE_KEYWORDS = ["taiwan", "lai", "tsai", "defense", "defence", "military", "army",
                     "navy", "missile", "war", "ukraine", "russia", "putin", "trump",
                     "sanction", "shooting", "shot", "killed", "dead", "death", "attack",
                     "crime", "murder", "court", "sentenced", "bribe", "graft", "quake",
                     "flood", "accident", "protest", "election", "senate", "congress",
-                    "terror", "hostage", "drug", "corruption", "lawsuit"]
+                    "terror", "hostage", "drug", "corruption", "lawsuit", "tariff",
+                    "visa", "embassy", "summit", "official says", "spokesperson"]
+
 
 
 # ---------------------------------------------------------------- HTTP 工具
@@ -112,9 +136,9 @@ def score(item):
         if k in t:
             return -1000          # 命中排除词：直接淘汰
     s = 0
-    for k in PREFER_KEYWORDS:
-        if k.lower() in t:
-            s += 2
+    for k, w in PREFER_KEYWORDS.items():
+        if k in t:
+            s += w                # 教育/社会/文化/科技/环境类加权
     return s
 
 
@@ -122,8 +146,8 @@ def rank_candidates(today, items, n=5):
     """当天优先 + 排除敏感/灾祸题材 + 主题打分，返回前 n 篇候选。"""
     pool = [i for i in items if i["date"] == today] or items
     pool = [i for i in pool if score(i) > -1000]
-    pref = [i for i in pool if score(i) > 0]
-    if pref:                      # 有中华文化/科技前沿类文章就优先这类
+    pref = [i for i in pool if score(i) >= 3]
+    if pref:                      # 有教育/科技/社会/文化/环境类文章就优先这类
         pool = pref
     pool = sorted(pool, key=score, reverse=True)
     return pool[:n]
@@ -164,15 +188,18 @@ def extract_article(url):
 
 
 # ---------------------------------------------------------------- 大模型
-WORD_PROMPT = """你是 CET-4 英语助教。请从给定的英文原文中，精选 30 个 CET-4 高频核心生词（可含少量高频难词）。
+WORD_PROMPT = """你是 CET-4 / 六级英语助教。请从给定的英文原文中，精选 30 个值得学习的核心词汇。
 只输出一个 JSON 对象，不要任何解释、不要 Markdown 代码块。格式：
-{"words":[{"w":"原文形式","base":"原形","phon":"/音标/","pos":"n./v./adj./adv.","cn":"中文释义","eg":"取自原文的例句，目标词用 **加粗**","col":"常用固定搭配","der":"词形变化与派生词"}]}
+{"words":[{"w":"原文形式","base":"原形","lvl":"CET-4 核心","phon":"/音标/","pos":"n./v./adj./adv.","cn":"中文释义","eg":"取自原文的例句，目标词用 **加粗**","col":"常用固定搭配","der":"词形变化与派生词"}]}
 
-硬性要求：
-1. 必须正好 30 个，且互不相同；
-2. `w` 必须与原文中的拼写**完全一致**（含时态、复数形式，如 scattered、embracing、depicts）；
-3. 每个词都必须**真实出现在原文中**，不得臆造；
-4. `der` 写复数、时态形式与同根派生词（如 fragile -> fragility / fragilely）。
+选词要求：
+1. **话题优先**：优先选取与「社会、教育、科技、文化、环境」相关的**话题词汇**（例如 heritage、curriculum、
+   innovation、sustainability、urban、literacy、ecosystem 这一类），体现文章的领域表达；
+2. **不限于四级考纲**：不必拘泥于 CET-4 词表。请包含 **8—12 个「拓展词」**（六级/雅思/托福高频词、
+   学术词或地道表达），帮助扩大词汇量；其余为四级高频核心词；
+3. `lvl` 字段标注级别，取值**只能是** `CET-4 核心` 或 `拓展`；
+4. 必须正好 30 个、互不相同；`w` 必须与原文拼写**完全一致**（含时态、复数形式，如 scattered、embracing）；
+5. `der` 写复数、时态形式与同根派生词；`col` 写 1—2 个常用搭配。
 """
 
 GRAMMAR_PROMPT = """你是英语语法讲师。请从给定英文原文中挑出 6 处最适合 CET-4 学生学习的重点语法现象或长难句。
@@ -324,7 +351,7 @@ def build_markdown(article, today, words, gj):
 
     # 第一部分
     head = ["# CET-4 每日精读 · China Daily", "",
-            "> 整理日期：%s　|　适用水平：CET-4（难度适中偏高）　|　生词：精选 30 个高频词" % today,
+            "> 整理日期：%s　|　适用水平：CET-4（含适度拓展）　|　词汇：30 个（四级核心 + 拓展词）" % today,
             "", "## 一、文章信息", "",
             "| 项目 | 内容 |", "| --- | --- |",
             "| 标题 | %s |" % article["title"],
@@ -336,23 +363,26 @@ def build_markdown(article, today, words, gj):
             "| 主题 | %s |" % (gj.get("topic_cn") or ""),
             "", "## 二、原文（含生词 + 语法双重标注）", "",
             "> **标注说明**",
-            "> - **加粗**单词后的 **①—㉚**：第三部分「CET-4 高频核心生词」（带圈数字）。",
+            "> - **加粗**单词后的 **①—㉚**：第三部分「核心词汇与拓展词」（带圈数字）。",
             "> - **加粗并加下划线**短语后的 **【1】—【6】**：第四部分「重点语法与长难句」（方头括号）。",
             "", sec2, ""]
 
     # 第三部分（每个生词独占一块，字段分行，便于阅读）
-    sec3 = ["## 三、CET-4 高频核心生词（精选 30 词）", "",
-            "> 序号为带圈数字 ①—㉚，与原文词末序号一一对应。", ""]
+    sec3 = ["## 三、核心词汇与拓展词（精选 30 词）", "",
+            "> 序号为带圈数字 ①—㉚，与原文词末序号一一对应。",
+            "> 选词侧重社会 / 教育 / 科技 / 文化 / 环境等话题词汇；标 **〔拓展〕** 者为超出四级考纲的拓展词。", ""]
     for n, w in enumerate(words[:len(CIRCLED)], 1):
         wd = (w.get("w") or w.get("base") or "").strip()
         if not wd:
             continue
         base = (w.get("base") or wd).strip()
         phon = (w.get("phon") or "").strip()
-        sec3.append("**%s %s**%s" % (CIRCLED[n - 1], wd, ("  `" + phon + "`") if phon else ""))
+        tag = "  **〔拓展〕**" if ("拓展" in (w.get("lvl") or "")) else ""
+        sec3.append("**%s %s**%s%s" % (CIRCLED[n - 1], wd, ("  `" + phon + "`") if phon else "", tag))
         if base and base.lower() != wd.lower():
             sec3.append("- **原形**：%s" % base)
         sec3.append("- **词性**：%s" % (w.get("pos") or ""))
+        sec3.append("- **级别**：%s" % ((w.get("lvl") or "CET-4 核心").strip()))
         sec3.append("- **释义**：%s" % (w.get("cn") or ""))
         sec3.append("- **例句**：%s" % (w.get("eg") or ""))
         sec3.append("- **语法与搭配**：%s" % (w.get("col") or ""))

@@ -547,6 +547,57 @@ def mark_word(text, word, n):
     return text[:m.start()] + "**" + m.group(0) + "**" + CIRCLED[n - 1] + text[m.end():]
 
 
+def normalize_order(marked, words, infos):
+    """按标注在正文中**实际出现的先后**重新编号，确保 ①—㉚ 与【1】—【6】严格按序，
+    并把第三/第四部分的顺序同步调整（确定性兜底，避免因插入位置交叠导致的错序）。"""
+    text = "\n\n".join(marked)
+    # —— 语法序号 ——
+    gseq = [int(m.group(1)) for m in re.finditer(r"【(\d+)】", text)]
+    if gseq and gseq != list(range(1, len(gseq) + 1)):
+        cnt = [0]
+
+        def gsub(m):
+            cnt[0] += 1
+            return "【%d】" % cnt[0]
+        text = re.sub(r"【(\d+)】", gsub, text)
+        by_old = {it["n"]: it for it in infos}
+        picked, new_infos = set(), []
+        for k, old in enumerate(gseq, 1):
+            it = by_old.get(old)
+            if it is not None and id(it) not in picked:
+                it["n"] = k
+                new_infos.append(it)
+                picked.add(id(it))
+        for it in infos:                      # 未被定位的条目追加在后面
+            if id(it) not in picked:
+                it["n"] = len(new_infos) + 1
+                new_infos.append(it)
+        infos = new_infos
+    # —— 生词序号 ——
+    wpat = re.compile(r"\*\*\s*([A-Za-z][A-Za-z\-']*)\*\*([" + re.escape(CIRCLED) + r"])")
+    wseq = [c for _w, c in wpat.findall(text)]
+    if wseq and wseq != list(CIRCLED[:len(wseq)]):
+        cnt = [0]
+
+        def wsub(m):
+            cnt[0] += 1
+            return "**%s**%s" % (m.group(1), CIRCLED[cnt[0] - 1])
+        text = wpat.sub(wsub, text)
+        old2new = {old: CIRCLED.index(old) for old in wseq}
+        used, new_words = set(), []
+        for old in wseq:
+            i = old2new[old]
+            if i not in used:
+                new_words.append(words[i])
+                used.add(i)
+        for i, w in enumerate(words):         # 未出现的词保留在末尾
+            if i not in used:
+                new_words.append(w)
+        words[:] = new_words
+    marked[:] = text.split("\n\n")
+    return marked, words, infos
+
+
 def build_section2(paras, words, grammar):
     """生成第二部分：语法短语 **<u>…</u>** + 句末【n】；生词 **word**①。
     语法编号按"在原文中出现的先后"重排，保证【1】—【6】严格按顺序、不错标。"""
@@ -592,7 +643,9 @@ def build_markdown(article, today, words, gj):
     paras = [p.strip() for p in article["body"].split("\n\n") if p.strip()]
     grammar = [g for g in (gj.get("grammar") or []) if isinstance(g, dict) and g.get("phrase")][:6]
     marked, infos = build_section2(paras, words, grammar)
+    marked, words, infos = normalize_order(marked, words, infos)   # 编号按实际出现顺序归一化
     sec2 = "\n\n".join("**[%d]** %s" % (i + 1, p) for i, p in enumerate(marked))
+    nw = len(words)                      # 实际词条数（短文章允许少于 30）
 
     # 第一部分
     # 配图描述：优先用模型给的客观描述；缺失则直接采用原文图注 / alt（客观文本）
@@ -605,7 +658,7 @@ def build_markdown(article, today, words, gj):
         else:
             photo = "原文未提供配图说明（可到原文网页查看）"
     head = ["# CET-4 每日精读 · China Daily", "",
-            "> 整理日期：%s　|　适用水平：CET-4 高分 / 六级预备（难度偏高）　|　词汇：30 个（含拓展词）" % today,
+            "> 整理日期：%s　|　适用水平：CET-4 高分 / 六级预备（难度偏高）　|　词汇：%d 个（含拓展词）" % (today, nw),
             "", "## 一、文章信息", "",
             "| 项目 | 内容 |", "| --- | --- |",
             "| 标题 | %s |" % article["title"],
@@ -623,9 +676,9 @@ def build_markdown(article, today, words, gj):
             "", sec2, ""]
 
     # 第三部分（每个生词独占一块，字段分行，便于阅读）
-    sec3 = ["## 三、核心词汇与拓展词（精选 30 词）", "",
-            "> 序号为带圈数字 ①—㉚，与原文词末序号一一对应。",
-            "> 选词侧重文化 / 科技 / 教育 / 社会 / 体育 / 环境等话题领域词，难度面向四级高分与六级预备；标 **〔拓展〕** 者超出四级考纲。", ""]
+    sec3 = ["## 三、核心词汇与拓展词（精选 %d 词）" % nw, "",
+            "> 序号为带圈数字，与原文词末序号一一对应。",
+            "> 选词侧重科技 / 文化 / 体育健康 / 生态 / 社会 / 教育等话题领域词，难度面向四级高分与六级预备；标 **〔拓展〕** 者超出四级考纲。", ""]
     for n, w in enumerate(words[:len(CIRCLED)], 1):
         wd = (w.get("w") or w.get("base") or "").strip()
         if not wd:
@@ -761,6 +814,8 @@ def _heads_from(sec3):
 def validate_md(md, article=None):
     """STEP 7 · 发送前的严格自审：返回问题列表（空列表 = 全部通过，可发送）。"""
     problems = []
+    body_len = len((article or {}).get("body", "") or "")
+    need_w = 30 if (not article or body_len >= 1500) else 20   # 短文章不可能凑出 30 个难词
     norm = md.translate(_FW)
     miss_w = [c for c in CIRCLED if c not in md]
     if miss_w:
@@ -787,8 +842,8 @@ def validate_md(md, article=None):
 
     # ---- ① 原文标注：齐全、不重复、顺序不乱 ----
     n_w2 = sum(1 for c in CIRCLED if c in sec2)
-    if n_w2 < 30:
-        problems.append("原文里生词标注仅 %d 个（应=30）" % n_w2)
+    if n_w2 < need_w:
+        problems.append("原文里生词标注仅 %d 个（应≥%d）" % (n_w2, need_w))
     dup_w = [c for c in CIRCLED if sec2.count(c) > 1]
     if dup_w:
         problems.append("原文生词序号重复：" + "".join(dup_w))
@@ -813,12 +868,13 @@ def validate_md(md, article=None):
 
     # ---- ② 第三部分：词数、级别、字段、难度 ----
     heads = _heads_from(sec3)
-    if len(heads) < 30:
-        problems.append("第三部分词条仅 %d 个（应=30）" % len(heads))
+    if len(heads) < need_w:
+        problems.append("第三部分词条仅 %d 个（应≥%d）" % (len(heads), need_w))
     n_ext = sec3.count("〔拓展〕")
     n_core = sec3.count("CET-4 核心")
-    if n_ext < 12:
-        problems.append("拓展词仅 %d 个（应≥12）" % n_ext)
+    need_ext = 12 if (not article or len(article.get("body", "")) >= 1500) else 10
+    if n_ext < need_ext:
+        problems.append("拓展词仅 %d 个（应≥%d）" % (n_ext, need_ext))
     if n_core < 5:
         problems.append("四级核心词仅 %d 个（应≥5）" % n_core)
     hits = [w for w in (h.lower() for h in heads) if w in BASIC_WORDS]

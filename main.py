@@ -57,10 +57,15 @@ PREFER_KEYWORDS = {
     "environment": 3, "climate": 3, "green": 3, "energy": 3, "solar": 3,
     "wind power": 3, "wildlife": 3, "ecolog": 3, "pollution": 3, "conservation": 3,
     "sustainability": 3, "biodiversity": 3, "carbon": 3, "recycl": 3, "forest": 3,
+    # —— 体育（权重 3）
+    "sport": 3, "athlete": 3, "olympic": 3, "tournament": 3, "championship": 3,
+    "match": 3, "fitness": 3, "medal": 3, "coach": 3, "team": 3,
+    "football": 3, "basketball": 3, "swimming": 3, "marathon": 3, "stadium": 3,
     # —— 其他常见软新闻（权重 2）
-    "medicine": 2, "health": 2, "sport": 2, "food": 2, "tea": 2,
+    "medicine": 2, "health": 2, "food": 2, "tea": 2,
     "panda": 2, "bird": 2, "agriculture": 2, "farming": 2, "village": 2,
 }
+
 # 命中即排除：政治/涉台/军事/灾祸/犯罪等不适合做学习材料的题材
 EXCLUDE_KEYWORDS = ["taiwan", "lai", "tsai", "defense", "defence", "military", "army",
                     "navy", "missile", "war", "ukraine", "russia", "putin", "trump",
@@ -142,14 +147,14 @@ def score(item):
     return s
 
 
-def rank_candidates(today, items, n=5):
+def rank_candidates(today, items, n=10):
     """当天优先 + 排除敏感/灾祸题材 + 主题打分，返回前 n 篇候选。"""
     pool = [i for i in items if i["date"] == today] or items
     pool = [i for i in pool if score(i) > -1000]
-    pref = [i for i in pool if score(i) >= 3]
-    if pref:                      # 有教育/科技/社会/文化/环境类文章就优先这类
-        pool = pref
     pool = sorted(pool, key=score, reverse=True)
+    pref = [i for i in pool if score(i) >= 3]
+    if len(pref) >= 4:            # 目标题材够多时只看目标题材
+        pool = pref
     return pool[:n]
 
 
@@ -159,8 +164,84 @@ def pick_article(today, items):
     return pool[0] if pool else None
 
 
+# 代码/CSS/JS 特征：命中即判定"不是正文散文"
+_JUNK_MARK = ("{", "}", "function(", "var ", "margin:", "padding:", "color:", "width:",
+              "height:", "@media", "px;", "display:", "background:", "document.",
+              "getElementById", "://", "www.", "cookie", "jQuery")
+
+
+def _clean_html(html):
+    """去掉脚本 / 样式 / 注释，避免把 CSS、JS 当成正文抓进来。"""
+    h = re.sub(r"<!--.*?-->", " ", html, flags=re.S)
+    for tag in ("script", "style", "noscript", "template", "iframe", "svg"):
+        h = re.sub(r"<%s[^>]*>.*?</%s>" % (tag, tag), " ", h, flags=re.S | re.I)
+    return h
+
+
+def _is_prose(txt):
+    """判断一段文本是否像"正文散文"（而非代码、导航、广告）。"""
+    if not (40 <= len(txt) <= 4000):
+        return False
+    if any(k in txt for k in _JUNK_MARK):
+        return False
+    letters = sum(1 for c in txt if c.isalpha() or c in " ,.'\"-;:!?()")
+    if letters / float(len(txt)) < 0.85:
+        return False
+    low = txt.lower()
+    return not low.startswith(("share", "click", "download", "photo by", "related",
+                               "copyright", "advertisement", "subscribe", "read more"))
+
+
+def _paragraphs_from(seg):
+    out = []
+    for p in re.findall(r"<p[^>]*>(.*?)</p>", seg, re.S | re.I):
+        txt = re.sub(r"<[^>]+>", "", p)
+        txt = unescape(re.sub(r"\s+", " ", txt)).strip()
+        if _is_prose(txt):
+            out.append(txt)
+    return out
+
+
+def _title_overlap(title, body):
+    """标题里的实词有多少出现在正文中（用于确认"抽到的正文=这篇文章"）。
+    用词干前缀匹配，避免 accessibility/accessible 这类词形变化造成误判。"""
+    words = [w.lower() for w in re.findall(r"[A-Za-z]{4,}", title)]
+    if not words:
+        return 1.0
+    low = body.lower()
+    hit = 0
+    for w in words:
+        stem = w[:6] if len(w) >= 6 else w
+        if w in low or stem in low:
+            hit += 1
+    return hit / float(len(words))
+
+
+def _meta_desc(html):
+    """取页面 meta description / og:description（用于校验正文是否对得上这篇文章）。"""
+    for pat in (r'<meta[^>]+property=["\']og:description["\'][^>]+content=["\'](.*?)["\']',
+                r'<meta[^>]+name=["\']description["\'][^>]+content=["\'](.*?)["\']',
+                r'<meta[^>]+content=["\'](.*?)["\'][^>]+name=["\']description["\']'):
+        m = re.search(pat, html, re.S | re.I)
+        if m:
+            d = unescape(re.sub(r"\s+", " ", m.group(1))).strip()
+            if len(d) >= 60:
+                return d
+    return ""
+
+
+def _desc_overlap(desc, body):
+    """正文与 meta description 的吻合度。"""
+    words = [w.lower() for w in re.findall(r"[A-Za-z]{5,}", desc)]
+    if len(words) < 6:
+        return -1.0
+    low = body.lower()
+    return sum(1 for w in words if w[:6] in low) / float(len(words))
+
+
 def extract_article(url):
-    html = http_get(url)
+    raw = http_get(url)
+    html = _clean_html(raw)
     # 标题
     m = re.search(r"<title>(.*?)</title>", html, re.S | re.I)
     title = unescape(re.sub(r"\s+", " ", m.group(1))).strip() if m else ""
@@ -170,36 +251,106 @@ def extract_article(url):
     author = re.sub(r"\s+", " ", ma.group(1)).strip() if ma else ""
     mt = re.search(r"Updated?:\s*([0-9]{4}-[0-9]{2}-[0-9]{2}[^<]{0,12})", html)
     pubdate = mt.group(1).strip() if mt else ""
-    # 正文段落
-    body = ""
-    mc = re.search(r'<div[^>]*id="Content"[^>]*>(.*?)</div>\s*</div>', html, re.S | re.I)
-    if not mc:
-        mc = re.search(r'<div[^>]*class="[^"]*article[^"]*"[^>]*>(.*?)</div>\s*</div>', html, re.S | re.I)
-    seg = mc.group(1) if mc else html
-    paras = re.findall(r"<p[^>]*>(.*?)</p>", seg, re.S | re.I)
-    clean = []
-    for p in paras:
-        txt = re.sub(r"<[^>]+>", "", p)
-        txt = unescape(re.sub(r"\s+", " ", txt)).strip()
-        if len(txt) > 40 and not txt.lower().startswith(("share", "click", "download", "photo by")):
-            clean.append(txt)
-    body = "\n\n".join(clean)
-    return {"title": title, "author": author, "date": pubdate, "url": url, "body": body}
+
+    # 正文：依次尝试多种容器，选"与标题最吻合、且内容最充实"的那一份
+    segs = []
+    for pat in (r'<div[^>]*id="Content"[^>]*>(.*?)</div>\s*</div>',
+                r'<div[^>]*class="[^"]*article[^"]*"[^>]*>(.*?)</div>\s*</div>',
+                r'<div[^>]*id="Content"[^>]*>(.*)',
+                r'<div[^>]*class="[^"]*article[^"]*"[^>]*>(.*)'):
+        mm = re.search(pat, html, re.S | re.I)
+        if mm:
+            segs.append(mm.group(1)[:300000])
+    segs.append(html)
+    desc = _meta_desc(html)
+    best, best_key = [], (-1, -1)
+    for seg in segs:
+        ps = _paragraphs_from(seg)
+        if len(ps) < 2:
+            continue
+        text = " ".join(ps)
+        ov = _title_overlap(title, text)
+        dov = _desc_overlap(desc, text)
+        good = 1 if (ov >= 0.5 or dov >= 0.6) else 0
+        key = (good, len(text))
+        if key > best_key:
+            best, best_key = ps, key
+    body = "\n\n".join(best)
+    return {"title": title, "author": author, "date": pubdate, "url": url,
+            "body": body, "match": _title_overlap(title, body),
+            "desc_match": _desc_overlap(desc, body)}
+
+
+
+def pick_best_article(cands):
+    """在候选里挑"题材最合适 + 正文够长（内容更丰富、难度更高）+ 与标题吻合"的一篇。"""
+    notes = []
+    cache = {}
+
+    def get(c):
+        if c["url"] not in cache:
+            try:
+                cache[c["url"]] = extract_article(c["url"])
+            except Exception as e:
+                cache[c["url"]] = None
+                notes.append("%s -> 抓取失败 %r" % (c["title"][:28], e))
+        return cache[c["url"]]
+
+    for minlen in (1200, 800):        # 先要"够长够充实"的，没有再放宽
+        best, key = None, None
+        for c in cands[:8]:
+            f = get(c)
+            if not f:
+                continue
+            if len(f["body"]) < minlen:
+                notes.append("%s -> 正文过短(%d)" % (c["title"][:28], len(f["body"])))
+                continue
+            if not (f.get("match", 1.0) >= 0.5 or f.get("desc_match", -1.0) >= 0.6):
+                notes.append("%s -> 正文与标题/摘要不吻合" % c["title"][:28])
+                continue
+            k = (score(c), len(f["body"]))
+            if key is None or k > key:
+                key, best = k, f
+        if best is not None:
+            return best, notes
+    best = None
+    for c in cands[:8]:               # 兜底：取最长且不乱的正文
+        f = get(c)
+        if f and len(f["body"]) >= 500 and (best is None or len(f["body"]) > len(best["body"])):
+            best = f
+    return best, notes
 
 
 # ---------------------------------------------------------------- 大模型
-WORD_PROMPT = """你是 CET-4 / 六级英语助教。请从给定的英文原文中，精选 30 个值得学习的核心词汇。
+WORD_PROMPT = """你是 CET-4 高分 / 六级英语助教。请从给定的英文原文中，精选 30 个**有难度、值得精学**的核心词汇。
 只输出一个 JSON 对象，不要任何解释、不要 Markdown 代码块。格式：
 {"words":[{"w":"原文形式","base":"原形","lvl":"CET-4 核心","phon":"/音标/","pos":"n./v./adj./adv.","cn":"中文释义","eg":"取自原文的例句，目标词用 **加粗**","col":"常用固定搭配","der":"词形变化与派生词"}]}
 
 选词要求：
-1. **话题优先**：优先选取与「社会、教育、科技、文化、环境」相关的**话题词汇**（例如 heritage、curriculum、
-   innovation、sustainability、urban、literacy、ecosystem 这一类），体现文章的领域表达；
-2. **不限于四级考纲**：不必拘泥于 CET-4 词表。请包含 **8—12 个「拓展词」**（六级/雅思/托福高频词、
-   学术词或地道表达），帮助扩大词汇量；其余为四级高频核心词；
-3. `lvl` 字段标注级别，取值**只能是** `CET-4 核心` 或 `拓展`；
+1. **难度要够**：面向**四级高分 / 六级水平**，优先选**不易掌握**的词（抽象名词、学术动词、多义动词、
+   形容词化名词、地道搭配）。**不要**选过于基础的常见词（如 city、public、family、school、good、make、
+   people、year、work、way 这类初中/基础词汇）；
+2. **话题优先**：优先与「文化、科技、教育、社会、体育、环境、经济」相关的**话题领域词**
+   （例如 heritage、curriculum、innovation、sustainability、infrastructure、urbanization、
+   cognitive、collaborative、resilience、stamina 这一类）；
+3. **不限于四级考纲**：请包含 **12—15 个「拓展词」**（六级 / 雅思 / 托福高频词或学术词），
+   其余为四级中偏难的词；`lvl` 取值**只能是** `CET-4 核心` 或 `拓展`；
 4. 必须正好 30 个、互不相同；`w` 必须与原文拼写**完全一致**（含时态、复数形式，如 scattered、embracing）；
 5. `der` 写复数、时态形式与同根派生词；`col` 写 1—2 个常用搭配。
+"""
+
+GRAMMAR_PROMPT = """你是英语语法讲师。请从给定英文原文中挑出 6 处**有难度、最具学习价值**的重点语法现象或长难句。
+只输出一个 JSON 对象，不要任何解释、不要 Markdown 代码块。格式：
+{"topic_cn":"一句话中文概括全文主题","grammar":[{"phrase":"原文中逐字出现的片段","point":"语法点名称","note":"简明中文讲解"}],"tips":["学习建议1","学习建议2","学习建议3"]}
+
+硬性要求：
+1. 必须正好 6 条，对应 6 个**不同**的句子；**优先**挑对四级考生偏难的考点：非谓语动词（分词/不定式/动名词
+   的复杂用法）、独立主格、with 复合结构、复杂定语从句、名词性从句、虚拟语气、倒装、强调句、
+   过去完成时、被动语态与情态动词连用、插入语与长句主干识别等；
+2. `phrase` 必须是原文中**连续、逐字、一字不差**出现的片段（程序会用它在原文里定位，并自动加粗加下划线），
+   长度 40—120 个字符，不要改写、不要用省略号、不要加引号；
+3. `note` 用中文，1—2 句说清语法点并**划出句子主干**；
+4. `tips` 给 3—4 条中文学习建议。
 """
 
 GRAMMAR_PROMPT = """你是英语语法讲师。请从给定英文原文中挑出 6 处最适合 CET-4 学生学习的重点语法现象或长难句。
@@ -351,7 +502,7 @@ def build_markdown(article, today, words, gj):
 
     # 第一部分
     head = ["# CET-4 每日精读 · China Daily", "",
-            "> 整理日期：%s　|　适用水平：CET-4（含适度拓展）　|　词汇：30 个（四级核心 + 拓展词）" % today,
+            "> 整理日期：%s　|　适用水平：CET-4 高分 / 六级预备（难度偏高）　|　词汇：30 个（含拓展词）" % today,
             "", "## 一、文章信息", "",
             "| 项目 | 内容 |", "| --- | --- |",
             "| 标题 | %s |" % article["title"],
@@ -370,7 +521,7 @@ def build_markdown(article, today, words, gj):
     # 第三部分（每个生词独占一块，字段分行，便于阅读）
     sec3 = ["## 三、核心词汇与拓展词（精选 30 词）", "",
             "> 序号为带圈数字 ①—㉚，与原文词末序号一一对应。",
-            "> 选词侧重社会 / 教育 / 科技 / 文化 / 环境等话题词汇；标 **〔拓展〕** 者为超出四级考纲的拓展词。", ""]
+            "> 选词侧重文化 / 科技 / 教育 / 社会 / 体育 / 环境等话题领域词，难度面向四级高分与六级预备；标 **〔拓展〕** 者超出四级考纲。", ""]
     for n, w in enumerate(words[:len(CIRCLED)], 1):
         wd = (w.get("w") or w.get("base") or "").strip()
         if not wd:
@@ -765,19 +916,12 @@ def main_handler(event=None, context=None):
     try:
         today = datetime.datetime.now().strftime("%Y-%m-%d")
         d, items = fetch_candidates()
-        cands = rank_candidates(d, items, 4)
+        cands = rank_candidates(d, items, 10)
         if not cands:
             return {"ok": False, "msg": "no article found"}
-        full = None
-        for c in cands:  # 在候选里挑正文最长的一篇，内容更充实
-            try:
-                f = extract_article(c["url"])
-            except Exception:
-                continue
-            if len(f["body"]) >= 400 and (full is None or len(f["body"]) > len(full["body"])):
-                full = f
+        full, notes = pick_best_article(cands)
         if full is None:
-            return {"ok": False, "msg": "no usable article (bodies too short)"}
+            return {"ok": False, "msg": "no usable article", "notes": notes[:5]}
         md = gen_markdown(full)
         warns = validate_md(md)
         if warns:  # 自检不通过 -> 整篇重生成一次，取更完整的一版

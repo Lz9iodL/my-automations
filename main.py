@@ -54,6 +54,12 @@ PREFER_KEYWORDS = {
     "championship": 4, "medal": 4, "fitness": 4, "coach": 4, "stadium": 4,
     "football": 4, "basketball": 4, "swimming": 4, "marathon": 4, "youth": 4,
     "health": 4, "healthy": 4, "exercise": 4, "nutrition": 4, "wellness": 4,
+    # —— ③b 体育细化偏好（用户偏好：青年男运动员 / 足球·篮球·田径 / 体能与健身）
+    "footballer": 4, "football team": 4, "basketball player": 4, "volleyball": 4,
+    "track and field": 4, "sprinter": 4, "hurdler": 4, "athletics": 4,
+    "running": 4, "sprint": 4, "jogging": 4, "student athlete": 4,
+    "young athlete": 4, "university team": 4, "sports meeting": 4, "university games": 4,
+    "training": 4, "workout": 4, "gym": 4, "strength": 4, "physique": 4,
     # —— ④ 生态（权重 4）：环境保护
     "environment": 4, "environmental": 4, "climate": 4, "green": 4, "ecology": 4,
     "ecolog": 4, "wildlife": 4, "biodiversity": 4, "conservation": 4, "sustainability": 4,
@@ -247,6 +253,48 @@ def _desc_overlap(desc, body):
     return sum(1 for w in words if w[:6] in low) / float(len(words))
 
 
+def _photo_info(html, seg=""):
+    """提取文章配图的客观信息：优先正文内的图注 / alt，其次页面级 og:image 说明。"""
+    def clean(t):
+        return unescape(re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", t))).strip()
+
+    cap, alt, src = "", "", "content"
+    # ① 正文内：figcaption / caption 段落 / 图片 alt
+    if seg:
+        for pat in (r'<figcaption[^>]*>(.*?)</figcaption>',
+                    r'<p[^>]*class="[^"]*(?:caption|photo-des|desc)[^"]*"[^>]*>(.*?)</p>',
+                    r'<span[^>]*class="[^"]*(?:caption|photo-des)[^"]*"[^>]*>(.*?)</span>'):
+            m = re.search(pat, seg, re.S | re.I)
+            if m:
+                cap = clean(m.group(1))
+                if len(cap) >= 8:
+                    break
+                cap = ""
+        mi = re.search(r'<img[^>]+alt=["\']([^"\']{6,220})["\']', seg, re.I)
+        alt = clean(mi.group(1)) if mi else ""
+    # ② 页面级兜底：og:image:alt / 首个 caption
+    if not (cap or alt):
+        src = "page"
+        for pat in (r'<meta[^>]+property=["\']og:image:alt["\'][^>]+content=["\'](.*?)["\']',
+                    r'<meta[^>]+name=["\']twitter:image:alt["\'][^>]+content=["\'](.*?)["\']'):
+            m = re.search(pat, html, re.S | re.I)
+            if m:
+                alt = clean(m.group(1))
+                if len(alt) >= 5:
+                    break
+                alt = ""
+        for pat in (r'<figcaption[^>]*>(.*?)</figcaption>',
+                    r'<p[^>]*class="[^"]*(?:caption|photo-des)[^"]*"[^>]*>(.*?)</p>'):
+            m = re.search(pat, html, re.S | re.I)
+            if m:
+                cap = clean(m.group(1))
+                if len(cap) >= 8:
+                    break
+                cap = ""
+    has = bool(re.search(r'<meta[^>]+property=["\']og:image["\']', html, re.I)) or bool(cap or alt)
+    return {"has_image": has, "photo_alt": alt[:300], "photo_caption": cap[:300], "photo_src": src}
+
+
 def extract_article(url):
     raw = http_get(url)
     html = _clean_html(raw)
@@ -271,7 +319,7 @@ def extract_article(url):
             segs.append(mm.group(1)[:300000])
     segs.append(html)
     desc = _meta_desc(html)
-    best, best_key = [], (-1, -1)
+    best, best_key, best_seg = [], (-1, -1), ""
     for seg in segs:
         ps = _paragraphs_from(seg)
         if len(ps) < 2:
@@ -282,10 +330,13 @@ def extract_article(url):
         good = 1 if (ov >= 0.5 or dov >= 0.6) else 0
         key = (good, len(text))
         if key > best_key:
-            best, best_key = ps, key
+            best, best_key, best_seg = ps, key, seg
     body = "\n\n".join(best)
+    ph = _photo_info(raw, best_seg)
     return {"title": title, "author": author, "date": pubdate, "url": url,
-            "body": body, "desc": desc, "match": _title_overlap(title, body),
+            "body": body, "desc": desc, "photo_alt": ph["photo_alt"],
+            "photo_caption": ph["photo_caption"], "has_image": ph["has_image"],
+            "match": _title_overlap(title, body),
             "desc_match": _desc_overlap(desc, body)}
 
 
@@ -372,18 +423,21 @@ WORD_PROMPT = """你是 CET-4 高分 / 六级英语助教。请从给定的英�
 5. `der` 写复数、时态形式与同根派生词；`col` 写 1—2 个常用搭配。
 """
 
-GRAMMAR_PROMPT = """你是英语语法讲师。请从给定英文原文中挑出 6 处**有难度、最具学习价值**的重点语法现象或长难句。
-只输出一个 JSON 对象，不要任何解释、不要 Markdown 代码块。格式：
-{"topic_cn":"一句话中文概括全文主题","grammar":[{"phrase":"原文中逐字出现的片段","point":"语法点名称","note":"简明中文讲解"}],"tips":["学习建议1","学习建议2","学习建议3"]}
+GRAMMAR_PROMPT = """你是英语语法讲师。请从给定英文原文中挑出 6 处**有难度、最具学习价值**的重点语法现象或长难句，
+并对文章配图给出一句客观描述。只输出一个 JSON 对象，不要任何解释、不要 Markdown 代码块。格式：
+{"topic_cn":"一句话中文概括全文主题","photo_cn":"文章配图的客观描述","grammar":[{"phrase":"原文中逐字出现的片段","point":"语法点名称","note":"简明中文讲解"}],"tips":["学习建议1","学习建议2","学习建议3"]}
 
 硬性要求：
-1. 必须正好 6 条，对应 6 个**不同**的句子；**优先**挑对四级考生偏难的考点：非谓语动词（分词/不定式/动名词
-   的复杂用法）、独立主格、with 复合结构、复杂定语从句、名词性从句、虚拟语气、倒装、强调句、
+1. **`photo_cn`（配图描述）**：只依据用户消息里给出的「配图信息」（图片 alt 文本 / 图注），做一句**客观、事实性**的说明，
+   例如「一名运动员在田径赛场上奔跑」「施工现场的工程车辆」。**禁止**任何主观评价、外貌评价或臆测
+   （不得出现"帅气/好看/身材/阳光"等词）；若未提供配图信息，写「原文未提供配图说明」。
+2. **`grammar`**：必须正好 6 条，对应 6 个**不同**的句子；**优先**挑对四级考生偏难的考点：非谓语动词（分词/不定式/
+   动名词的复杂用法）、独立主格、with 复合结构、复杂定语从句、名词性从句、虚拟语气、倒装、强调句、
    过去完成时、被动语态与情态动词连用、插入语与长句主干识别等；
-2. `phrase` 必须是原文中**连续、逐字、一字不差**出现的片段（程序会用它在原文里定位，并自动加粗加下划线），
+3. `phrase` 必须是原文中**连续、逐字、一字不差**出现的片段（程序会用它在原文里定位，并自动加粗加下划线），
    长度 40—120 个字符，不要改写、不要用省略号、不要加引号；
-3. `note` 用中文，1—2 句说清语法点并**划出句子主干**；
-4. `tips` 给 3—4 条中文学习建议。
+4. `note` 用中文，1—2 句说清语法点并**划出句子主干**；
+5. `tips` 给 3—4 条中文学习建议。
 """
 
 GRAMMAR_PROMPT = """你是英语语法讲师。请从给定英文原文中挑出 6 处最适合 CET-4 学生学习的重点语法现象或长难句。
@@ -541,6 +595,15 @@ def build_markdown(article, today, words, gj):
     sec2 = "\n\n".join("**[%d]** %s" % (i + 1, p) for i, p in enumerate(marked))
 
     # 第一部分
+    # 配图描述：优先用模型给的客观描述；缺失则直接采用原文图注 / alt（客观文本）
+    photo = (gj.get("photo_cn") or "").strip()
+    if len(photo) < 4:
+        photo = (article.get("photo_caption") or article.get("photo_alt") or "").strip()
+        if photo:
+            mark = "（正文配图说明）" if article.get("photo_src") == "content" else "（页面配图说明，以网页为准）"
+            photo = mark + photo
+        else:
+            photo = "原文未提供配图说明（可到原文网页查看）"
     head = ["# CET-4 每日精读 · China Daily", "",
             "> 整理日期：%s　|　适用水平：CET-4 高分 / 六级预备（难度偏高）　|　词汇：30 个（含拓展词）" % today,
             "", "## 一、文章信息", "",
@@ -552,6 +615,7 @@ def build_markdown(article, today, words, gj):
             "| 网页链接 | %s |" % article["url"],
             "| 体裁 | 新闻报道 / 特写 |",
             "| 主题 | %s |" % (gj.get("topic_cn") or ""),
+            "| 配图 | %s |" % photo,
             "", "## 二、原文（含生词 + 语法双重标注）", "",
             "> **标注说明**",
             "> - **加粗**单词后的 **①—㉚**：第三部分「核心词汇与拓展词」（带圈数字）。",
@@ -611,10 +675,16 @@ def gen_markdown(article):
     today = datetime.datetime.now().strftime("%Y-%m-%d")
     paras = [p.strip() for p in article["body"].split("\n\n") if p.strip()]
     numbered = "\n\n".join("【第%d段】%s" % (i + 1, p) for i, p in enumerate(paras))
-    base_user = ("【今天日期】{d}\n【文章标题】{t}\n【作者】{a}\n【发布时间】{p}\n【网页链接】{u}\n\n"
-                 "【原文（分段编号）】\n{b}").format(
+    ph_bits = []
+    if article.get("photo_caption"):
+        ph_bits.append("图注：" + article["photo_caption"])
+    if article.get("photo_alt"):
+        ph_bits.append("alt：" + article["photo_alt"])
+    ph = "　".join(ph_bits) or "无"
+    base_user = ("【今天日期】{d}\n【文章标题】{t}\n【作者】{a}\n【发布时间】{p}\n【网页链接】{u}\n"
+                 "【配图信息】{ph}\n\n【原文（分段编号）】\n{b}").format(
         d=today, t=article["title"], a=article["author"], p=article["date"],
-        u=article["url"], b=numbered)
+        u=article["url"], b=numbered, ph=ph)
     words = []
     try:
         wj = llm_json(WORD_PROMPT, base_user, temperature=0.3)
@@ -703,6 +773,9 @@ def validate_md(md, article=None):
             problems.append("缺少标题 " + sec)
 
     sec_all = split_sections(md)
+    sec1 = sec_all.get("一", "")
+    if "| 配图 |" not in sec1:
+        problems.append("文章信息缺「配图」一行")
     # 去掉「> 标注说明」等引用行，避免其中的字样干扰判断
     sec2 = "\n".join(l for l in sec_all.get("二", "").translate(_FW).split("\n")
                      if not l.strip().startswith(">"))
@@ -813,6 +886,7 @@ def review_report(md, article):
         "语法点数": sum(1 for i in range(1, 7) if ("【%d】" % i) in sec2),
         "下划线": sec2.count("<u>"),
         "拓展词": sec3.count("〔拓展〕"),
+        "配图": (article.get("photo_caption") or article.get("photo_alt") or "原文未提供配图说明")[:60],
         "总字数": len(md),
     }
 

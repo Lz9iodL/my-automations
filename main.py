@@ -33,38 +33,46 @@ from html import escape, unescape
 from email.message import EmailMessage
 
 CHINA_DAILY_HOME = "https://www.chinadaily.com.cn/"
-# 选题偏好（加权）：教育 / 科技 / 社会 / 文化 / 环境 优先，其中教育与社会权重更高
+# 选题优先级（用户指定，权重即优先级）：科技 > 文化 > 体育健康 > 生态 > 社会 > 教育 > 其他
 PREFER_KEYWORDS = {
-    # —— 教育（权重 4）
-    "education": 4, "school": 4, "student": 4, "university": 4, "college": 4,
-    "teacher": 4, "campus": 4, "curriculum": 4, "classroom": 4, "exam": 4,
-    "literacy": 4, "kindergarten": 4, "scholarship": 4, "lecture": 4, "tuition": 4,
-    # —— 社会（权重 4）
-    "society": 4, "social": 4, "community": 4, "volunteer": 4, "charity": 4,
-    "welfare": 4, "elderly": 4, "youth": 4, "family": 4, "rural": 4,
-    "city": 4, "urban": 4, "public": 4, "civic": 4, "poverty": 4,
-    # —— 文化（权重 3）
-    "culture": 3, "cultural": 3, "heritage": 3, "museum": 3, "tradition": 3,
-    "traditional": 3, "festival": 3, "art": 3, "artisan": 3, "craft": 3,
-    "opera": 3, "cuisine": 3, "ancient": 3, "dynasty": 3, "calligraphy": 3,
-    "intangible": 3, "tourism": 3, "travel": 3, "archaeolog": 3, "folklore": 3,
-    # —— 科技（权重 3）
-    "tech": 3, "technology": 3, "ai": 3, "artificial": 3, "space": 3,
-    "rocket": 3, "satellite": 3, "innovation": 3, "science": 3, "scientist": 3,
-    "robot": 3, "digital": 3, "smart": 3, "computer": 3, "internet": 3,
-    "data": 3, "algorithm": 3, "chip": 3, "startup": 3, "invention": 3,
-    # —— 环境（权重 3）
-    "environment": 3, "climate": 3, "green": 3, "energy": 3, "solar": 3,
-    "wind power": 3, "wildlife": 3, "ecolog": 3, "pollution": 3, "conservation": 3,
-    "sustainability": 3, "biodiversity": 3, "carbon": 3, "recycl": 3, "forest": 3,
-    # —— 体育（权重 3）
-    "sport": 3, "athlete": 3, "olympic": 3, "tournament": 3, "championship": 3,
-    "match": 3, "fitness": 3, "medal": 3, "coach": 3, "team": 3,
-    "football": 3, "basketball": 3, "swimming": 3, "marathon": 3, "stadium": 3,
-    # —— 其他常见软新闻（权重 2）
-    "medicine": 2, "health": 2, "food": 2, "tea": 2,
-    "panda": 2, "bird": 2, "agriculture": 2, "farming": 2, "village": 2,
+    # —— ① 科技（权重 6）：AI、新发现发明、新技术、自然科学
+    "tech": 6, "technology": 6, "technological": 6, "ai": 6, "artificial intelligence": 6,
+    "robot": 6, "algorithm": 6, "chip": 6, "semiconductor": 6, "quantum": 6,
+    "space": 6, "rocket": 6, "satellite": 6, "astronaut": 6, "lunar": 6, "mars": 6,
+    "science": 6, "scientist": 6, "research": 6, "breakthrough": 6, "discovery": 6,
+    "invention": 6, "innovate": 6, "innovation": 6, "laboratory": 6, "experiment": 6,
+    "digital": 6, "internet": 6, "computer": 6, "smart": 6, "startup": 6,
+    "physics": 6, "chemistry": 6, "biology": 6, "gene": 6, "vaccine": 6,
+    # —— ② 文化（权重 5）：中华文化、中外文化交流、世界文化
+    "culture": 5, "cultural": 5, "heritage": 5, "civilization": 5, "tradition": 5,
+    "traditional": 5, "museum": 5, "archaeolog": 5, "relic": 5, "calligraphy": 5,
+    "opera": 5, "folk": 5, "folklore": 5, "intangible": 5, "dynasty": 5,
+    "ancient": 5, "art": 5, "artisan": 5, "craft": 5, "cuisine": 5,
+    "exchange": 5, "festival": 5, "tourism": 5, "travel": 5, "peony": 5,
+    # —— ③ 体育健康（权重 4）
+    "sport": 4, "athlete": 4, "olympic": 4, "paralympic": 4, "tournament": 4,
+    "championship": 4, "medal": 4, "fitness": 4, "coach": 4, "stadium": 4,
+    "football": 4, "basketball": 4, "swimming": 4, "marathon": 4, "youth": 4,
+    "health": 4, "healthy": 4, "exercise": 4, "nutrition": 4, "wellness": 4,
+    # —— ④ 生态（权重 4）：环境保护
+    "environment": 4, "environmental": 4, "climate": 4, "green": 4, "ecology": 4,
+    "ecolog": 4, "wildlife": 4, "biodiversity": 4, "conservation": 4, "sustainability": 4,
+    "recycl": 4, "carbon": 4, "emission": 4, "pollution": 4, "forest": 4,
+    "energy": 4, "solar": 4, "wind power": 4, "wetland": 4, "migratory": 4,
+    # —— ⑤ 社会（权重 3）：文史哲、社会科学、调查研究
+    "society": 3, "social": 3, "community": 3, "volunteer": 3, "charity": 3,
+    "welfare": 3, "elderly": 3, "survey": 3, "study": 3, "study finds": 3,
+    "philosophy": 3, "history": 3, "historian": 3, "literature": 3, "rural": 3,
+    "urban": 3, "poverty": 3, "census": 3, "demographic": 3, "employment": 3,
+    # —— ⑥ 教育（权重 3）
+    "education": 3, "school": 3, "student": 3, "university": 3, "college": 3,
+    "teacher": 3, "campus": 3, "curriculum": 3, "classroom": 3, "exam": 3,
+    "literacy": 3, "kindergarten": 3, "scholarship": 3, "lecture": 3, "tuition": 3,
+    # —— 其他常见软新闻（权重 1）
+    "medicine": 1, "food": 1, "tea": 1, "panda": 1, "bird": 1,
+    "agriculture": 1, "farming": 1, "village": 1, "city": 1, "public": 1,
 }
+
 
 # 命中即排除：政治/涉台/军事/灾祸/犯罪等不适合做学习材料的题材
 EXCLUDE_KEYWORDS = ["taiwan", "lai", "tsai", "defense", "defence", "military", "army",
@@ -277,13 +285,27 @@ def extract_article(url):
             best, best_key = ps, key
     body = "\n\n".join(best)
     return {"title": title, "author": author, "date": pubdate, "url": url,
-            "body": body, "match": _title_overlap(title, body),
+            "body": body, "desc": desc, "match": _title_overlap(title, body),
             "desc_match": _desc_overlap(desc, body)}
 
 
 
-def pick_best_article(cands):
-    """在候选里挑"题材最合适 + 正文够长（内容更丰富、难度更高）+ 与标题吻合"的一篇。"""
+def _pub_age_days(pubdate, today):
+    """文章发布日距今天数（用于时效性把关）；解析失败返回 999。"""
+    m = re.search(r"(\d{4})-(\d{2})-(\d{2})", pubdate or "")
+    if not m:
+        return 999
+    try:
+        d = datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        t = datetime.datetime.strptime(today, "%Y-%m-%d").date()
+    except Exception:
+        return 999
+    return max(0, (t - d).days)
+
+
+def pick_best_article(cands, today=None):
+    """挑"题材优先级最高 + 正文够长（难度更高）+ 与标题吻合 + 时效新"的一篇。"""
+    today = today or datetime.datetime.now().strftime("%Y-%m-%d")
     notes = []
     cache = {}
 
@@ -302,21 +324,32 @@ def pick_best_article(cands):
             f = get(c)
             if not f:
                 continue
+            age = _pub_age_days(f.get("date", ""), today)
+            if age > 3:               # 时效性：超过 3 天的一律不用
+                notes.append("%s -> 时效性不足(发布 %d 天前)" % (c["title"][:28], age))
+                continue
             if len(f["body"]) < minlen:
                 notes.append("%s -> 正文过短(%d)" % (c["title"][:28], len(f["body"])))
                 continue
             if not (f.get("match", 1.0) >= 0.5 or f.get("desc_match", -1.0) >= 0.6):
                 notes.append("%s -> 正文与标题/摘要不吻合" % c["title"][:28])
                 continue
-            k = (score(c), len(f["body"]))
+            f["age_days"] = age
+            k = (score(c), len(f["body"]), -age)   # 主题优先级 > 篇幅 > 越新越优先
             if key is None or k > key:
                 key, best = k, f
         if best is not None:
             return best, notes
     best = None
-    for c in cands[:8]:               # 兜底：取最长且不乱的正文
+    for c in cands[:8]:               # 兜底：取最长且不乱的正文（仍要求 7 天内）
         f = get(c)
-        if f and len(f["body"]) >= 500 and (best is None or len(f["body"]) > len(best["body"])):
+        if not f or len(f["body"]) < 500:
+            continue
+        age = _pub_age_days(f.get("date", ""), today)
+        if age > 7:
+            continue
+        f["age_days"] = age
+        if best is None or len(f["body"]) > len(best["body"]):
             best = f
     return best, notes
 
@@ -333,8 +366,8 @@ WORD_PROMPT = """你是 CET-4 高分 / 六级英语助教。请从给定的英�
 2. **话题优先**：优先与「文化、科技、教育、社会、体育、环境、经济」相关的**话题领域词**
    （例如 heritage、curriculum、innovation、sustainability、infrastructure、urbanization、
    cognitive、collaborative、resilience、stamina 这一类）；
-3. **不限于四级考纲**：请包含 **12—15 个「拓展词」**（六级 / 雅思 / 托福高频词或学术词），
-   其余为四级中偏难的词；`lvl` 取值**只能是** `CET-4 核心` 或 `拓展`；
+3. **不限于四级考纲**：请包含 **12—20 个「拓展词」**（六级 / 雅思 / 托福高频词或学术词），
+   其余为四级中偏难的词（**四级核心词请保留 8 个以上**）；`lvl` 取值**只能是** `CET-4 核心` 或 `拓展`；
 4. 必须正好 30 个、互不相同；`w` 必须与原文拼写**完全一致**（含时态、复数形式，如 scattered、embracing）；
 5. `der` 写复数、时态形式与同根派生词；`col` 写 1—2 个常用搭配。
 """
@@ -461,20 +494,27 @@ def mark_word(text, word, n):
 
 
 def build_section2(paras, words, grammar):
-    """生成第二部分：语法短语 **<u>…</u>** + 句末【n】；生词 **word**①。"""
-    spots = {}
-    infos = []
-    for n, g in enumerate(grammar, 1):
+    """生成第二部分：语法短语 **<u>…</u>** + 句末【n】；生词 **word**①。
+    语法编号按"在原文中出现的先后"重排，保证【1】—【6】严格按顺序、不错标。"""
+    found, missed = [], []
+    for g in grammar:
         loc = locate_phrase(paras, g.get("phrase", ""))
-        if not loc:
-            infos.append({"n": n, "g": g, "found": False})
-            continue
-        i, s, e = loc
+        if loc:
+            i, s, e = loc
+            found.append((i, s, e, g))
+        else:
+            missed.append(g)
+    found.sort(key=lambda x: (x[0], x[1]))          # 按原文位置排序后再统一编号
+
+    spots, infos = {}, []
+    for n, (i, s, e, g) in enumerate(found, 1):
         spots.setdefault(i, []).append((s, e, n))
         st, en = sentence_span(paras[i], s)
         infos.append({"n": n, "g": g, "found": True, "para": i + 1,
                       "sent": sentence_no(paras[i], s),
                       "sentence": paras[i][st:en].strip()})
+    for k, g in enumerate(missed, len(found) + 1):
+        infos.append({"n": k, "g": g, "found": False})
     marked = []
     for i, p in enumerate(paras):
         for (s, e, n) in sorted(spots.get(i, []), key=lambda x: -x[0]):
@@ -582,6 +622,15 @@ def gen_markdown(article):
         words = words[:len(CIRCLED)]          # 严格截断到 30 个，防越界
     except Exception:
         words = []
+    # 按在原文中首次出现的位置排序 -> 保证 ①—㉚ 的顺序与原文完全一致
+    alltext = "\n\n".join(paras)
+    def _firstpos(w):
+        wd = (w.get("w") or w.get("base") or "").strip()
+        if not wd:
+            return 10 ** 9
+        m = re.search(r"(?<![A-Za-z])" + re.escape(wd) + r"(?![A-Za-z])", alltext)
+        return m.start() if m else 10 ** 9
+    words.sort(key=_firstpos)
     best = None
     for attempt in (1, 2):
         try:
@@ -619,8 +668,28 @@ def split_sections(md):
     return sec
 
 
-def validate_md(md):
-    """发送前自检：返回问题列表（空列表 = 通过）。"""
+# 过于基础的高频词：命中过多说明选词太容易，需要重新生成
+BASIC_WORDS = set("""city public family school good make people year work way day time
+place thing life hand part group area level order form food water book word world
+house room friend country number night point home mother father child woman man
+week month long small large little young old right left high low big new now just
+only also very well more most many much some any each other after before again
+get give take come go see know think want need use find tell ask feel try leave
+call move turn show hear play run open close start stop help talk look""".split())
+
+
+def _heads_from(sec3):
+    """从第三部分提取 30 个词头（①—㉚ 后面的单词）。"""
+    heads = []
+    for c in CIRCLED:
+        m = re.search(r"\*\*" + re.escape(c) + r"\s+([A-Za-z][A-Za-z\-']*)", sec3)
+        if m:
+            heads.append(m.group(1))
+    return heads
+
+
+def validate_md(md, article=None):
+    """STEP 7 · 发送前的严格自审：返回问题列表（空列表 = 全部通过，可发送）。"""
     problems = []
     norm = md.translate(_FW)
     miss_w = [c for c in CIRCLED if c not in md]
@@ -632,27 +701,139 @@ def validate_md(md):
     for sec in ("## 一、", "## 二、", "## 三、", "## 四、", "## 五、"):
         if sec not in md:
             problems.append("缺少标题 " + sec)
-    n_word = sum(1 for c in CIRCLED if c in md)
-    if 0 < n_word < 30:
-        problems.append("生词数不足 30（当前 %d）" % n_word)
 
-    # ---- 重点：原文（第二部分）里必须"就地"标注，不能只在后面几部分讲 ----
-    sec2 = split_sections(md).get("二", "").translate(_FW)
-    # 去掉「> 标注说明」等引用/说明行，避免其中的字样干扰判断
-    sec2 = "\n".join(l for l in sec2.split("\n") if not l.strip().startswith(">"))
-    if sec2:
-        miss_g2 = [str(i) for i in range(1, 7) if ("【%s】" % i) not in sec2]
-        if miss_g2:
-            problems.append("原文缺语法标注【%s】" % "】【".join(miss_g2))
-        n_u = sec2.count("<u>") + sec2.count("<ins>")
-        if n_u < 6:
-            problems.append("原文加下划线短语仅 %d 处（应≥6）" % n_u)
-        n_w2 = sum(1 for c in CIRCLED if c in sec2)
-        if n_w2 < 30:
-            problems.append("原文里生词标注仅 %d 个（应=30）" % n_w2)
-    else:
+    sec_all = split_sections(md)
+    # 去掉「> 标注说明」等引用行，避免其中的字样干扰判断
+    sec2 = "\n".join(l for l in sec_all.get("二", "").translate(_FW).split("\n")
+                     if not l.strip().startswith(">"))
+    sec3 = sec_all.get("三", "")
+    sec4 = sec_all.get("四", "")
+    if not sec2:
         problems.append("未找到第二部分正文")
+        return problems
+
+    # ---- ① 原文标注：齐全、不重复、顺序不乱 ----
+    n_w2 = sum(1 for c in CIRCLED if c in sec2)
+    if n_w2 < 30:
+        problems.append("原文里生词标注仅 %d 个（应=30）" % n_w2)
+    dup_w = [c for c in CIRCLED if sec2.count(c) > 1]
+    if dup_w:
+        problems.append("原文生词序号重复：" + "".join(dup_w))
+    pos_w = [sec2.find(c) for c in CIRCLED if c in sec2]
+    if pos_w != sorted(pos_w):
+        problems.append("原文生词序号未按 ①—㉚ 顺序出现")
+    miss_g2 = [str(i) for i in range(1, 7) if ("【%s】" % i) not in sec2]
+    if miss_g2:
+        problems.append("原文缺语法标注【%s】" % "】【".join(miss_g2))
+    dup_g = [i for i in range(1, 7) if sec2.count("【%d】" % i) > 1]
+    if dup_g:
+        problems.append("原文语法序号重复：" + "、".join(str(i) for i in dup_g))
+    pos_g = [sec2.find("【%d】" % i) for i in range(1, 7) if ("【%d】" % i) in sec2]
+    if pos_g != sorted(pos_g):
+        problems.append("原文语法序号未按【1】—【6】顺序出现")
+    n_u = sec2.count("<u>")
+    if n_u != 6:
+        problems.append("原文加粗下划线短语 %d 处（应=6）" % n_u)
+    junk = [k for k in ("{", "}", "px;", "function(", "margin:", "var ", "://") if k in sec2]
+    if junk:
+        problems.append("原文疑似混入代码/乱码：" + " ".join(junk))
+
+    # ---- ② 第三部分：词数、级别、字段、难度 ----
+    heads = _heads_from(sec3)
+    if len(heads) < 30:
+        problems.append("第三部分词条仅 %d 个（应=30）" % len(heads))
+    n_ext = sec3.count("〔拓展〕")
+    n_core = sec3.count("CET-4 核心")
+    if n_ext < 12:
+        problems.append("拓展词仅 %d 个（应≥12）" % n_ext)
+    if n_core < 5:
+        problems.append("四级核心词仅 %d 个（应≥5）" % n_core)
+    hits = [w for w in (h.lower() for h in heads) if w in BASIC_WORDS]
+    if len(hits) > 5:
+        problems.append("选词偏简单（命中基础词 %d 个：%s）" % (len(hits), " ".join(hits[:6])))
+    for f in ("词性", "级别", "释义", "例句", "语法与搭配", "词形变化"):
+        if ("**%s**" % f) not in sec3:
+            problems.append("第三部分缺字段「%s」" % f)
+
+    # 逐词块校验：例句必须包含目标词、音标必须用 /…/ 包裹
+    blocks, cur = [], None
+    for ln in sec3.split("\n"):
+        if re.match(r"^\*\*[" + re.escape(CIRCLED) + r"]", ln):
+            if cur:
+                blocks.append(cur)
+            cur = [ln]
+        elif cur is not None:
+            cur.append(ln)
+    if cur:
+        blocks.append(cur)
+    for b in blocks:
+        hm = re.match(r"^\*\*[" + re.escape(CIRCLED) + r"]\s+([A-Za-z][A-Za-z\-']*)", b[0])
+        if not hm:
+            continue
+        wd = hm.group(1)
+        text = "\n".join(b)
+        m_eg = re.search(r"\*\*例句\*\*：(.+)", text)
+        stem = wd.lower()[:6] if len(wd) >= 6 else wd.lower()
+        if m_eg and stem not in m_eg.group(1).lower():
+            problems.append("例句未包含目标词：「%s」" % wd)
+        m_ph = re.search(r"`([^`]+)`", b[0])
+        if m_ph and not (m_ph.group(1).startswith("/") and m_ph.group(1).endswith("/")):
+            problems.append("音标格式异常：「%s」" % wd)
+
+    # ---- ③ 第四部分：条数、字段 ----
+    if sec4.count("出处：") < 6:
+        problems.append("第四部分仅 %d 条（应=6）" % sec4.count("出处："))
+    for f in ("原句", "语法点", "讲解"):
+        if ("**%s**" % f) not in sec4:
+            problems.append("第四部分缺字段「%s」" % f)
+
+    # ---- ④ 原文一致性（忠实于新闻原文）----
+    if article:
+        ov = _title_overlap(article.get("title", ""), sec2)
+        dv = _desc_overlap(article.get("desc", ""), sec2)
+        if ov < 0.5 and dv < 0.6:
+            problems.append("原文与标题/摘要不吻合（标题%.2f 摘要%.2f）" % (ov, dv))
     return problems
+
+
+def review_report(md, article):
+
+    """生成审核报告（写入邮件正文，便于每天核对）。"""
+    sec = split_sections(md)
+    sec2 = sec.get("二", "").translate(_FW)
+    sec2 = "\n".join(l for l in sec2.split("\n") if not l.strip().startswith(">"))
+    sec3 = sec.get("三", "")
+    return {
+        "标题": article.get("title", ""),
+        "链接": article.get("url", ""),
+        "正文字数": len(article.get("body", "")),
+        "标题吻合": round(_title_overlap(article.get("title", ""), sec2), 2),
+        "摘要吻合": round(_desc_overlap(article.get("desc", ""), sec2), 2),
+        "生词数": sum(1 for c in CIRCLED if c in sec2),
+        "语法点数": sum(1 for i in range(1, 7) if ("【%d】" % i) in sec2),
+        "下划线": sec2.count("<u>"),
+        "拓展词": sec3.count("〔拓展〕"),
+        "总字数": len(md),
+    }
+
+
+def docx_text(docx_bytes):
+    """把 .docx 里的可见文本抽出来（用于成品级检查）。"""
+    try:
+        with zipfile.ZipFile(io.BytesIO(docx_bytes)) as z:
+            xml = z.read("word/document.xml").decode("utf-8", "ignore")
+    except Exception:
+        return ""
+    xml = re.sub(r"</w:p>", "\n", xml)
+    xml = re.sub(r"<[^>]+>", "", xml)
+    return unescape(xml)
+
+
+def audit_docx(docx_bytes):
+    """成品级审核：Word 成品里不得残留任何 Markdown 记号（标注只以"加粗/下划线"呈现）。"""
+    t = docx_text(docx_bytes)
+    bad = [s for s in ("**", "`", "<u>", "</u>", "## ") if s in t]
+    return ["成品文档残留 Markdown 记号：" + " ".join(bad)] if bad else []
 
 
 
@@ -919,20 +1100,31 @@ def main_handler(event=None, context=None):
         cands = rank_candidates(d, items, 10)
         if not cands:
             return {"ok": False, "msg": "no article found"}
-        full, notes = pick_best_article(cands)
+        full, notes = pick_best_article(cands, today)
         if full is None:
             return {"ok": False, "msg": "no usable article", "notes": notes[:5]}
-        md = gen_markdown(full)
-        warns = validate_md(md)
-        if warns:  # 自检不通过 -> 整篇重生成一次，取更完整的一版
+        print("[选文] %s | %s | 发布 %s | 正文 %d 字 | 标题吻合 %.2f | 摘要吻合 %.2f"
+              % (full["title"], full["url"], full["date"], len(full["body"]),
+                 full.get("match", -1), full.get("desc_match", -1)))
+
+        # STEP 7 · 生成后严格自审（内容清单 + 成品级检查）：不合格就重新生成（最多 3 次）
+        md, docx, warns = None, None, None
+        for attempt in range(3):
             try:
-                md2 = gen_markdown(full)
-                w2 = validate_md(md2)
-                if len(w2) < len(warns):
-                    md, warns = md2, w2
-            except Exception:
-                pass
-        docx = build_docx(md)
+                md_try = gen_markdown(full)
+                docx_try = build_docx(md_try)
+            except Exception as e:
+                notes.append("第%d次生成失败 %r" % (attempt + 1, e))
+                continue
+            w_try = validate_md(md_try, full) + audit_docx(docx_try)
+            print("[自审] 第 %d 次：问题 %d 个 %s" % (attempt + 1, len(w_try), w_try))
+            if md is None or len(w_try) < len(warns):
+                md, docx, warns = md_try, docx_try, w_try
+            if not w_try:                     # 一次过审
+                break
+        if md is None:
+            return {"ok": False, "msg": "generate failed", "notes": notes[:5]}
+
         fname = "CET4_ChinaDaily_%s.docx" % today
         try:  # 额外落盘一份（GitHub Actions 会作为 artifact 上传）
             outdir = os.path.join(os.getcwd(), "output")
@@ -941,14 +1133,18 @@ def main_handler(event=None, context=None):
                 f.write(docx)
         except Exception:
             pass
+        rep = review_report(md, full)          # 只写入运行日志（不再随邮件发送）
+        print("[审核报告] " + json.dumps(rep, ensure_ascii=False))
+
         subject = "CET-4 每日精读 · China Daily（%s）| %s" % (today, full["title"])
-        body = ("今日 CET-4 精读材料见附件（Word）。\n\n文章：%s\n来源：China Daily\n链接：%s\n"
-                % (full["title"], full["url"]))
-        if warns:
-            body += "\n（自检提示：%s）\n" % "；".join(warns)
+        body = ("今日 CET-4 精读材料见附件（Word）。\n\n"
+                "文章：%s\n来源：China Daily\n发布时间：%s\n链接：%s\n"
+                % (full["title"], full["date"], full["url"]))
+        if warns:                              # 仅在有问题时提示（正常情况下保持简洁）
+            body += "\n（本次自检提示：%s）\n" % "；".join(warns)
         send_mail(docx, fname, subject, body)
         return {"ok": True, "article": full["title"], "url": full["url"],
-                "file": fname, "warnings": warns}
+                "file": fname, "warnings": warns, "report": rep}
     except Exception as e:
         import traceback
         return {"ok": False, "error": repr(e),

@@ -48,7 +48,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-      - name: 保活提交（避免 60 天无活动被自动停用）
+      - name: 保活提交 + 记录上一篇（避免 60 天无活动被停用 / 避免次日重复推同一篇）
         if: always()
         run: |
           git config user.name "cet4-bot"
@@ -56,5 +56,8 @@ jobs:
           mkdir -p .state
           date -u +"%Y-%m-%dT%H:%M:%SZ" > .state/last-run.txt
           git add .state/last-run.txt
+          # 脚本若成功发送，会写入 .state/last_article.txt（记录本篇链接）
+          git add .state/last_article.txt 2>/dev/null || true
           git commit -m "chore: keep-alive $(date -u +%F)" || echo "nothing to commit"
           git push || echo "push skipped"
+

@@ -33,6 +33,24 @@ from html import escape, unescape
 from email.message import EmailMessage
 
 CHINA_DAILY_HOME = "https://www.chinadaily.com.cn/"
+# 抓取候选的频道页（首页 + 目标主题频道；任一页失败都自动跳过，不影响整体）
+SECTION_PAGES = ("https://www.chinadaily.com.cn/culture",
+                 "https://www.chinadaily.com.cn/sports",
+                 "https://www.chinadaily.com.cn/tech",
+                 "https://www.chinadaily.com.cn/life",
+                 "https://www.chinadaily.com.cn/china",
+                 "https://global.chinadaily.com.cn/culture",
+                 "https://global.chinadaily.com.cn/sports")
+
+# 固定用北京时间：GitHub Actions 已设 TZ=Asia/Shanghai，但云函数等环境可能没有，
+# 显式 +8 可避免"日期差一天"（北京时间 07:00 时 UTC 仍是前一天）。
+BJ_TZ = datetime.timezone(datetime.timedelta(hours=8))
+
+
+def now_bj():
+    return datetime.datetime.now(BJ_TZ)
+
+
 # 选题优先级（用户指定，权重即优先级）：科技 > 文化 > 体育健康 > 生态 > 社会 > 教育 > 其他
 PREFER_KEYWORDS = {
     # —— ① 科技（权重 6）：AI、新发现发明、新技术、自然科学
@@ -123,27 +141,38 @@ def http_post_json(url, payload, headers, timeout=180):
 
 
 # ---------------------------------------------------------------- 抓文章
-def fetch_candidates():
-    """返回 [(url, title, date_str), ...] 按当天优先。"""
-    html = http_get(CHINA_DAILY_HOME)
-    today = datetime.datetime.now().strftime("%Y%m%d")
-    # 注意：China Daily 首页用的是协议相对链接（//www...），正则需兼容
+def _links_from(html):
+    """从页面 HTML 中解析出文章链接（兼容协议相对链接 //…）。"""
     pat = re.compile(
         r'<a\b[^>]*?href="((?:https?:)?//[^"]*?/a/(\d{6})/(\d{2})/(WS[0-9a-f]+)\.html)"[^>]*>(.*?)</a>',
         re.S | re.I)
-    seen, items = set(), []
+    out = []
     for m in pat.finditer(html):
         url = m.group(1)
         if url.startswith("//"):
             url = "https:" + url
-        if url in seen:
-            continue
         title = unescape(re.sub(r"<[^>]+>", " ", m.group(5)))
         title = re.sub(r"\s+", " ", title).strip()
         if len(title) < 6:
             continue
-        seen.add(url)
-        items.append({"url": url, "title": title[:140], "date": m.group(2) + m.group(3)})
+        out.append({"url": url, "title": title[:140], "date": m.group(2) + m.group(3)})
+    return out
+
+
+def fetch_candidates():
+    """首页 + 目标主题频道页汇总候选（按当天优先）。任一页抓取失败自动跳过。"""
+    today = now_bj().strftime("%Y%m%d")
+    seen, items = set(), []
+    for page in (CHINA_DAILY_HOME,) + SECTION_PAGES:
+        try:
+            html = http_get(page)
+        except Exception:
+            continue
+        for it in _links_from(html):
+            if it["url"] in seen:
+                continue
+            seen.add(it["url"])
+            items.append(it)
     # 当天优先
     items.sort(key=lambda x: (x["date"] != today,))
     return today, items
@@ -336,27 +365,59 @@ def extract_article(url):
     return {"title": title, "author": author, "date": pubdate, "url": url,
             "body": body, "desc": desc, "photo_alt": ph["photo_alt"],
             "photo_caption": ph["photo_caption"], "has_image": ph["has_image"],
+            "photo_src": ph.get("photo_src", "content"),
             "match": _title_overlap(title, body),
             "desc_match": _desc_overlap(desc, body)}
 
 
 
 def _pub_age_days(pubdate, today):
-    """文章发布日距今天数（用于时效性把关）；解析失败返回 999。"""
-    m = re.search(r"(\d{4})-(\d{2})-(\d{2})", pubdate or "")
+    """文章发布日距今天数（用于时效性把关）；解析失败返回 999。
+    today 兼容 'YYYY-MM-DD' 与 'YYYYMMDD' 两种写法。"""
+    m = re.search(r"(\d{4})-?(\d{2})-?(\d{2})", pubdate or "")
     if not m:
         return 999
     try:
         d = datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-        t = datetime.datetime.strptime(today, "%Y-%m-%d").date()
     except Exception:
         return 999
+    t = None
+    for fmt in ("%Y-%m-%d", "%Y%m%d"):
+        try:
+            t = datetime.datetime.strptime((today or "").strip(), fmt).date()
+            break
+        except Exception:
+            continue
+    if t is None:
+        t = now_bj().date()
     return max(0, (t - d).days)
 
 
-def pick_best_article(cands, today=None):
-    """挑"题材优先级最高 + 正文够长（难度更高）+ 与标题吻合 + 时效新"的一篇。"""
-    today = today or datetime.datetime.now().strftime("%Y-%m-%d")
+def _state_path(name):
+    return os.path.join(os.getcwd(), ".state", name)
+
+
+def _read_state(name, default=""):
+    try:
+        with open(_state_path(name), "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except Exception:
+        return default
+
+
+def _write_state(name, value):
+    try:
+        os.makedirs(os.path.dirname(_state_path(name)), exist_ok=True)
+        with open(_state_path(name), "w", encoding="utf-8") as f:
+            f.write((value or "").strip() + "\n")
+    except Exception:
+        pass
+
+
+def pick_best_article(cands, today=None, avoid=None):
+    """挑"题材优先级最高 + 正文够长（难度更高）+ 与标题吻合 + 时效新"的一篇。
+    avoid = 上一篇用过的链接（尽量不重复推送同一篇）。"""
+    today = today or now_bj().strftime("%Y-%m-%d")
     notes = []
     cache = {}
 
@@ -374,6 +435,9 @@ def pick_best_article(cands, today=None):
         for c in cands[:8]:
             f = get(c)
             if not f:
+                continue
+            if avoid and c["url"] == avoid:
+                notes.append("%s -> 与上一篇重复，跳过" % c["title"][:28])
                 continue
             age = _pub_age_days(f.get("date", ""), today)
             if age > 3:               # 时效性：超过 3 天的一律不用
@@ -419,37 +483,27 @@ WORD_PROMPT = """你是 CET-4 高分 / 六级英语助教。请从给定的英�
    cognitive、collaborative、resilience、stamina 这一类）；
 3. **不限于四级考纲**：请包含 **12—20 个「拓展词」**（六级 / 雅思 / 托福高频词或学术词），
    其余为四级中偏难的词（**四级核心词请保留 8 个以上**）；`lvl` 取值**只能是** `CET-4 核心` 或 `拓展`；
-4. 必须正好 30 个、互不相同；`w` 必须与原文拼写**完全一致**（含时态、复数形式，如 scattered、embracing）；
+4. 必须**至少 30 个**（建议给 **32—34 个**，供程序剔除无法定位的词后仍有 30 个），互不相同；
+   `w` 必须与原文拼写一致（含时态、复数形式，如 scattered、embracing）；
 5. `der` 写复数、时态形式与同根派生词；`col` 写 1—2 个常用搭配。
 """
 
-GRAMMAR_PROMPT = """你是英语语法讲师。请从给定英文原文中挑出 6 处**有难度、最具学习价值**的重点语法现象或长难句，
+GRAMMAR_PROMPT = """你是英语语法讲师。请从给定英文原文中挑出 8 处**有难度、最具学习价值**的重点语法现象或长难句，
 并对文章配图给出一句客观描述。只输出一个 JSON 对象，不要任何解释、不要 Markdown 代码块。格式：
 {"topic_cn":"一句话中文概括全文主题","photo_cn":"文章配图的客观描述","grammar":[{"phrase":"原文中逐字出现的片段","point":"语法点名称","note":"简明中文讲解"}],"tips":["学习建议1","学习建议2","学习建议3"]}
 
 硬性要求：
-1. **`photo_cn`（配图描述）**：只依据用户消息里给出的「配图信息」（图片 alt 文本 / 图注），做一句**客观、事实性**的说明，
+1. **`grammar` 请给 8 条**（程序会从中自动挑选前 6 处能在原文中准确定位的），每条对应一个**不同**的句子；
+   **优先**挑对四级高分/六级考生偏难的考点：非谓语动词（分词/不定式/动名词的复杂用法）、独立主格、
+   with 复合结构、复杂定语从句、名词性从句、虚拟语气、倒装、强调句、过去完成时、被动语态与情态动词连用、
+   插入语与长句主干识别等；
+2. **`photo_cn`（配图描述）**：只依据用户消息里给出的「配图信息」（图片 alt 文本 / 图注），做一句**客观、事实性**的说明，
    例如「一名运动员在田径赛场上奔跑」「施工现场的工程车辆」。**禁止**任何主观评价、外貌评价或臆测
-   （不得出现"帅气/好看/身材/阳光"等词）；若未提供配图信息，写「原文未提供配图说明」。
-2. **`grammar`**：必须正好 6 条，对应 6 个**不同**的句子；**优先**挑对四级考生偏难的考点：非谓语动词（分词/不定式/
-   动名词的复杂用法）、独立主格、with 复合结构、复杂定语从句、名词性从句、虚拟语气、倒装、强调句、
-   过去完成时、被动语态与情态动词连用、插入语与长句主干识别等；
+   （不得出现"帅气/好看/身材/阳光"等词）；若未提供配图信息，写「原文未提供配图说明」；
 3. `phrase` 必须是原文中**连续、逐字、一字不差**出现的片段（程序会用它在原文里定位，并自动加粗加下划线），
    长度 40—120 个字符，不要改写、不要用省略号、不要加引号；
 4. `note` 用中文，1—2 句说清语法点并**划出句子主干**；
 5. `tips` 给 3—4 条中文学习建议。
-"""
-
-GRAMMAR_PROMPT = """你是英语语法讲师。请从给定英文原文中挑出 6 处最适合 CET-4 学生学习的重点语法现象或长难句。
-只输出一个 JSON 对象，不要任何解释、不要 Markdown 代码块。格式：
-{"topic_cn":"一句话中文概括全文主题","grammar":[{"phrase":"原文中逐字出现的片段","point":"语法点名称","note":"简明中文讲解"}],"tips":["学习建议1","学习建议2","学习建议3"]}
-
-硬性要求：
-1. 必须正好 6 条，对应 6 个**不同**的句子，覆盖不同语法点（分词、定语从句、名词性从句、并列结构、时态等）；
-2. `phrase` 必须是原文中**连续、逐字、一字不差**出现的片段（程序会用它在原文里定位，并自动加粗加下划线），
-   长度 40—120 个字符，不要改写、不要用省略号、不要加引号；
-3. `note` 用中文，1—2 句说清语法点与句子主干；
-4. `tips` 给 3—4 条中文学习建议。
 """
 
 CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳㉑㉒㉓㉔㉕㉖㉗㉘㉙㉚"
@@ -537,11 +591,29 @@ def sentence_no(text, pos):
     return sum(1 for _ in _SENT_END.finditer(text, 0, pos)) + 1
 
 
+def find_word(text, word):
+    """在文本中查找目标词：先精确边界匹配，再容忍词形变化（dividend → dividends）。"""
+    if not word:
+        return None
+    cands = [word]
+    if word.lower().endswith("s") and len(word) > 4:
+        cands.append(word[:-1])
+    for w in cands:
+        m = re.search(r"(?<![A-Za-z])" + re.escape(w) + r"(?![A-Za-z])", text)
+        if m:
+            return m
+        if len(w) >= 5:                     # 容许后缀变形，但整体高亮
+            m = re.search(r"(?<![A-Za-z])" + re.escape(w) + r"[A-Za-z]{1,3}(?![A-Za-z])", text)
+            if m:
+                return m
+    return None
+
+
 def mark_word(text, word, n):
-    """把第一个独立出现的 word 标成 **word**①。"""
+    """把第一个出现的 word 标成 **word**①（容忍词形变化，整体高亮）。"""
     if not word or n < 1 or n > len(CIRCLED):
         return text
-    m = re.search(r"(?<![A-Za-z])" + re.escape(word) + r"(?![A-Za-z])", text)
+    m = find_word(text, word)
     if not m:
         return text
     return text[:m.start()] + "**" + m.group(0) + "**" + CIRCLED[n - 1] + text[m.end():]
@@ -600,16 +672,15 @@ def normalize_order(marked, words, infos):
 
 def build_section2(paras, words, grammar):
     """生成第二部分：语法短语 **<u>…</u>** + 句末【n】；生词 **word**①。
-    语法编号按"在原文中出现的先后"重排，保证【1】—【6】严格按顺序、不错标。"""
-    found, missed = [], []
+    从候选语法点里只取「能在原文中准确定位」的（最多 6 处），编号按出现先后排列，
+    保证 ①—㉚ 与【1】—【n】齐全、按序、不重复、不错标。"""
+    found = []
     for g in grammar:
         loc = locate_phrase(paras, g.get("phrase", ""))
         if loc:
-            i, s, e = loc
-            found.append((i, s, e, g))
-        else:
-            missed.append(g)
-    found.sort(key=lambda x: (x[0], x[1]))          # 按原文位置排序后再统一编号
+            found.append((loc[0], loc[1], loc[2], g))
+    found.sort(key=lambda x: (x[0], x[1]))          # 按原文位置排序
+    found = found[:6]                               # 最多 6 处；定位不到的候选直接弃用
 
     spots, infos = {}, []
     for n, (i, s, e, g) in enumerate(found, 1):
@@ -618,11 +689,10 @@ def build_section2(paras, words, grammar):
         infos.append({"n": n, "g": g, "found": True, "para": i + 1,
                       "sent": sentence_no(paras[i], s),
                       "sentence": paras[i][st:en].strip()})
-    for k, g in enumerate(missed, len(found) + 1):
-        infos.append({"n": k, "g": g, "found": False})
     marked = []
     for i, p in enumerate(paras):
         for (s, e, n) in sorted(spots.get(i, []), key=lambda x: -x[0]):
+            # 先在句末插入【n】，再给短语加粗加下划线
             pos = max(sentence_end(p, e), e)
             p = p[:pos] + "【%d】" % n + p[pos:]
             p = p[:s] + "**<u>" + p[s:e] + "</u>**" + p[e:]
@@ -632,8 +702,7 @@ def build_section2(paras, words, grammar):
         if not wd:
             continue
         for i in range(len(marked)):
-            m = re.search(r"(?<![A-Za-z])" + re.escape(wd) + r"(?![A-Za-z])", marked[i])
-            if m:
+            if find_word(marked[i], wd):
                 marked[i] = mark_word(marked[i], wd, n)
                 break
     return marked, infos
@@ -641,7 +710,7 @@ def build_section2(paras, words, grammar):
 
 def build_markdown(article, today, words, gj):
     paras = [p.strip() for p in article["body"].split("\n\n") if p.strip()]
-    grammar = [g for g in (gj.get("grammar") or []) if isinstance(g, dict) and g.get("phrase")][:6]
+    grammar = [g for g in (gj.get("grammar") or []) if isinstance(g, dict) and g.get("phrase")][:9]
     marked, infos = build_section2(paras, words, grammar)
     marked, words, infos = normalize_order(marked, words, infos)   # 编号按实际出现顺序归一化
     sec2 = "\n\n".join("**[%d]** %s" % (i + 1, p) for i, p in enumerate(marked))
@@ -672,7 +741,7 @@ def build_markdown(article, today, words, gj):
             "", "## 二、原文（含生词 + 语法双重标注）", "",
             "> **标注说明**",
             "> - **加粗**单词后的 **①—㉚**：第三部分「核心词汇与拓展词」（带圈数字）。",
-            "> - **加粗并加下划线**短语后的 **【1】—【6】**：第四部分「重点语法与长难句」（方头括号）。",
+            "> - **加粗并加下划线**短语后的 **【1】—【n】**：第四部分「重点语法与长难句」（方头括号）。",
             "", sec2, ""]
 
     # 第三部分（每个生词独占一块，字段分行，便于阅读）
@@ -718,14 +787,15 @@ def build_markdown(article, today, words, gj):
     sec5.append("")
 
     md = "\n".join(head + sec3 + sec4 + sec5)
-    miss_w = [n for n in range(1, len(words[:30]) + 1) if CIRCLED[n - 1] not in sec2]
-    miss_g = [n for n in range(1, 7) if ("【%d】" % n) not in sec2]
+    miss_w = [n for n in range(1, len(words[:len(CIRCLED)]) + 1) if CIRCLED[n - 1] not in sec2]
+    ng = len(infos)                                # 实际写入原文的语法点数
+    miss_g = [n for n in range(1, ng + 1) if ("【%d】" % n) not in sec2]
     return md, miss_w, miss_g
 
 
 def gen_markdown(article):
     """先让模型给出「生词表 + 语法清单」（JSON），再由代码把标注精确写进原文。"""
-    today = datetime.datetime.now().strftime("%Y-%m-%d")
+    today = now_bj().strftime("%Y-%m-%d")
     paras = [p.strip() for p in article["body"].split("\n\n") if p.strip()]
     numbered = "\n\n".join("【第%d段】%s" % (i + 1, p) for i, p in enumerate(paras))
     ph_bits = []
@@ -742,16 +812,23 @@ def gen_markdown(article):
     try:
         wj = llm_json(WORD_PROMPT, base_user, temperature=0.3)
         words = [w for w in (wj.get("words") or []) if isinstance(w, dict) and (w.get("w") or w.get("base"))]
-        words = words[:len(CIRCLED)]          # 严格截断到 30 个，防越界
     except Exception:
         words = []
-    # 按在原文中首次出现的位置排序 -> 保证 ①—㉚ 的顺序与原文完全一致
     alltext = "\n\n".join(paras)
+    # 只保留"原文中确实找得到"的词（容忍词形变化），再截断到 30 个 —— 避免标不上导致序号缺失
+    kept, dropped = [], []
+    for w in words:
+        (kept if find_word(alltext, (w.get("w") or w.get("base") or "").strip()) else dropped).append(w)
+    if dropped:
+        print("[词汇] 剔除原文中找不到的词 %d 个：%s"
+              % (len(dropped), "、".join((x.get("w") or x.get("base") or "") for x in dropped[:8])))
+    words = kept[:len(CIRCLED)]
+    print("[词汇] 模型返回 %d 个，可用 %d 个" % (len(kept) + len(dropped), len(words)))
+
+    # 按在原文中首次出现的位置排序 -> 保证 ①—㉚ 的顺序与原文完全一致
     def _firstpos(w):
         wd = (w.get("w") or w.get("base") or "").strip()
-        if not wd:
-            return 10 ** 9
-        m = re.search(r"(?<![A-Za-z])" + re.escape(wd) + r"(?![A-Za-z])", alltext)
+        m = find_word(alltext, wd) if wd else None
         return m.start() if m else 10 ** 9
     words.sort(key=_firstpos)
     best = None
@@ -811,6 +888,11 @@ def _heads_from(sec3):
     return heads
 
 
+# 「硬伤」前缀：命中即拒绝发送（宁缺毋滥）。其余问题视为可降级提示，照常发送并在正文注明。
+HARD_PROBLEMS = ("原文疑似混入代码/乱码", "原文与标题/摘要不吻合", "未找到第二部分正文",
+                 "成品文档残留 Markdown 记号", "缺少生词序号", "正文过短")
+
+
 def validate_md(md, article=None):
     """STEP 7 · 发送前的严格自审：返回问题列表（空列表 = 全部通过，可发送）。"""
     problems = []
@@ -820,9 +902,6 @@ def validate_md(md, article=None):
     miss_w = [c for c in CIRCLED if c not in md]
     if miss_w:
         problems.append("缺少生词序号 " + "".join(miss_w))
-    miss_g = [str(i) for i in range(1, 7) if ("【%s】" % i) not in norm]
-    if miss_g:
-        problems.append("缺少语法序号 " + "、".join(miss_g))
     for sec in ("## 一、", "## 二、", "## 三、", "## 四、", "## 五、"):
         if sec not in md:
             problems.append("缺少标题 " + sec)
@@ -831,6 +910,12 @@ def validate_md(md, article=None):
     sec1 = sec_all.get("一", "")
     if "| 配图 |" not in sec1:
         problems.append("文章信息缺「配图」一行")
+    m_topic = re.search(r"\|\s*主题\s*\|\s*(.*?)\s*\|", sec1)
+    if not m_topic or len(m_topic.group(1).strip()) < 3:
+        problems.append("文章信息缺「主题」内容")
+    m_time = re.search(r"\|\s*发布时间\s*\|\s*(.*?)\s*\|", sec1)
+    if not m_time or not re.search(r"\d{4}-\d{2}-\d{2}", m_time.group(1)):
+        problems.append("文章信息缺有效「发布时间」")
     # 去掉「> 标注说明」等引用行，避免其中的字样干扰判断
     sec2 = "\n".join(l for l in sec_all.get("二", "").translate(_FW).split("\n")
                      if not l.strip().startswith(">"))
@@ -850,19 +935,18 @@ def validate_md(md, article=None):
     pos_w = [sec2.find(c) for c in CIRCLED if c in sec2]
     if pos_w != sorted(pos_w):
         problems.append("原文生词序号未按 ①—㉚ 顺序出现")
-    miss_g2 = [str(i) for i in range(1, 7) if ("【%s】" % i) not in sec2]
-    if miss_g2:
-        problems.append("原文缺语法标注【%s】" % "】【".join(miss_g2))
-    dup_g = [i for i in range(1, 7) if sec2.count("【%d】" % i) > 1]
-    if dup_g:
-        problems.append("原文语法序号重复：" + "、".join(str(i) for i in dup_g))
-    pos_g = [sec2.find("【%d】" % i) for i in range(1, 7) if ("【%d】" % i) in sec2]
-    if pos_g != sorted(pos_g):
-        problems.append("原文语法序号未按【1】—【6】顺序出现")
+    gs = [int(x) for x in re.findall(r"【(\d+)】", sec2)]
+    if not gs:
+        problems.append("原文缺语法标注（【n】）")
+    else:
+        if sorted(gs) != list(range(1, len(gs) + 1)):
+            problems.append("原文语法序号不连续或有重复：%s" % gs)
+        if len(gs) < 5:
+            problems.append("原文语法标注仅 %d 处（应≥5）" % len(gs))
     n_u = sec2.count("<u>")
-    if n_u != 6:
-        problems.append("原文加粗下划线短语 %d 处（应=6）" % n_u)
-    junk = [k for k in ("{", "}", "px;", "function(", "margin:", "var ", "://") if k in sec2]
+    if n_u != len(gs):
+        problems.append("原文加粗下划线短语 %d 处（应与语法序号数 %d 一致）" % (n_u, len(gs)))
+    junk = [k for k in ("{", "}", "px;", "function(", "margin:", "var ") if k in sec2]
     if junk:
         problems.append("原文疑似混入代码/乱码：" + " ".join(junk))
 
@@ -910,8 +994,11 @@ def validate_md(md, article=None):
             problems.append("音标格式异常：「%s」" % wd)
 
     # ---- ③ 第四部分：条数、字段 ----
-    if sec4.count("出处：") < 6:
-        problems.append("第四部分仅 %d 条（应=6）" % sec4.count("出处："))
+    n_out = sec4.count("出处：")
+    if gs and n_out != len(gs):
+        problems.append("第四部分 %d 条，与原文语法标注数 %d 不一致" % (n_out, len(gs)))
+    elif n_out < 5:
+        problems.append("第四部分仅 %d 条（应≥5）" % n_out)
     for f in ("原句", "语法点", "讲解"):
         if ("**%s**" % f) not in sec4:
             problems.append("第四部分缺字段「%s」" % f)
@@ -922,6 +1009,8 @@ def validate_md(md, article=None):
         dv = _desc_overlap(article.get("desc", ""), sec2)
         if ov < 0.5 and dv < 0.6:
             problems.append("原文与标题/摘要不吻合（标题%.2f 摘要%.2f）" % (ov, dv))
+        if len(article.get("body", "") or "") < 400:
+            problems.append("正文过短（%d 字），不足以生成精读" % len(article.get("body", "") or ""))
     return problems
 
 
@@ -1225,12 +1314,12 @@ def send_mail(docx_bytes, filename, subject, body_text):
 # ---------------------------------------------------------------- 入口
 def main_handler(event=None, context=None):
     try:
-        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        today = now_bj().strftime("%Y-%m-%d")
         d, items = fetch_candidates()
         cands = rank_candidates(d, items, 10)
         if not cands:
             return {"ok": False, "msg": "no article found"}
-        full, notes = pick_best_article(cands, today)
+        full, notes = pick_best_article(cands, today, avoid=_read_state("last_article.txt"))
         if full is None:
             return {"ok": False, "msg": "no usable article", "notes": notes[:5]}
         print("[选文] %s | %s | 发布 %s | 正文 %d 字 | 标题吻合 %.2f | 摘要吻合 %.2f"
@@ -1255,12 +1344,22 @@ def main_handler(event=None, context=None):
         if md is None:
             return {"ok": False, "msg": "generate failed", "notes": notes[:5]}
 
+        # 硬伤（乱码 / 内容与新闻不符 / 序号缺损 / 成品残留记号）一律不发，避免推送错误文档
+        hard = [w for w in (warns or []) if w.startswith(HARD_PROBLEMS)]
+        if hard:
+            print("[拒发] " + "；".join(hard))
+            return {"ok": False, "msg": "self-check hard failure, not sent",
+                    "problems": hard, "notes": notes[:5]}
+
         fname = "CET4_ChinaDaily_%s.docx" % today
         try:  # 额外落盘一份（GitHub Actions 会作为 artifact 上传）
             outdir = os.path.join(os.getcwd(), "output")
             os.makedirs(outdir, exist_ok=True)
             with open(os.path.join(outdir, fname), "wb") as f:
                 f.write(docx)
+            with open(os.path.join(outdir, fname.replace(".docx", ".md")), "w",
+                      encoding="utf-8") as f:      # 同时留档 Markdown 源，便于复核排版
+                f.write(md)
         except Exception:
             pass
         rep = review_report(md, full)          # 只写入运行日志（不再随邮件发送）
@@ -1273,6 +1372,7 @@ def main_handler(event=None, context=None):
         if warns:                              # 仅在有问题时提示（正常情况下保持简洁）
             body += "\n（本次自检提示：%s）\n" % "；".join(warns)
         send_mail(docx, fname, subject, body)
+        _write_state("last_article.txt", full["url"])   # 记录本篇，次日自动避免重复
         return {"ok": True, "article": full["title"], "url": full["url"],
                 "file": fname, "warnings": warns, "report": rep}
     except Exception as e:
@@ -1283,6 +1383,10 @@ def main_handler(event=None, context=None):
 
 if __name__ == "__main__":
     import sys
+    try:                      # Windows 控制台默认 GBK，避免打印带圈序号时报编码错误
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
     _res = main_handler()
     print(json.dumps(_res, ensure_ascii=False))
     sys.exit(0 if _res.get("ok") else 1)
